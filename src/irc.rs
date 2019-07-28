@@ -21,12 +21,15 @@ pub struct MessageBuffer {
 }
 
 impl MessageBuffer {
+	// here we want to return the index of the next line, *after* CR-LF
+	// so that the extract() fn spits out a string complete with carriage return
+	// that will be stripped somewhere else in the program before/during message parsing
 	fn get_eol(&self) -> Option<usize> {
 		// anything past self.index is old (invalid!) data
 		for i in 1..self.index {
 			// byte literals are u8
 			if self.buffer[i-1] == (b'\r' as char) && self.buffer[i] == (b'\n' as char) {
-				return Some(i)
+				return Some(i+1)
 			}
 		}
 		None
@@ -52,7 +55,7 @@ impl MessageBuffer {
 	// "return whatever string happens to currently be in there"
 	pub fn extract(&mut self) -> Option<String> {
 		if self.index == 0 {
-			return None
+			return None;
 		}
 		let mut out_string = String::new();
 		if let Some(eol_index) = self.get_eol() {
@@ -73,6 +76,7 @@ impl MessageBuffer {
 	// for client buffers we're reading, this might be called by the incoming socket data event handler
 	pub fn append(&mut self, message_string: String) -> Result<(), BufferError> {
 		// how much space is left in the buffer?
+		// does it make sense to try a partial write?
 		if message_string.len() > (MESSAGE_SIZE - self.index) {
 			return Err(BufferError::OverFlow);
 		}
