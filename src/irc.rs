@@ -56,12 +56,15 @@ impl MessageBuffer {
 		}
 		let mut out_string = String::new();
 		if let Some(eol_index) = self.get_eol() {
+			println!("got eol");
 			out_string.extend(&self.buffer[0..eol_index]);
 			self.shift_bytes_to_start(eol_index);
 		} else {
+			println!("no eol");
 			out_string.extend(&self.buffer[..self.index]);
 			self.index = 0;
 		}
+		println!("our string: {}", out_string);
 		Some(out_string)
 	}
 
