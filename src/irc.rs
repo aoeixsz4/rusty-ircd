@@ -40,7 +40,7 @@ impl MessageBuffer {
 		for (i, j) in (start_index..self.index).enumerate() {
 			self.buffer[i] = self.buffer[j];
 		}
-		self.index = 0;
+		self.index = self.index - start_index;  // there was a bug here! index should be shifted, not reset
 	}
 
 	// we only need this for client input buffers, so
