@@ -14,19 +14,23 @@ pub enum Source {
     User(String, Option<String>, Option<String>)
 }
 
-fn extract_prefix(msg: &str) -> Result<Ok(&str, Option<Box<Source>>), Err> {
-    // a message with prefix must start with ':'
-    if msg[0] != ':' {
-        return Ok(msg, None);
-    }
+#[derive(Debug)]
+pub enum ParseError {
+    CommandNotRecognised(String),
+    TooFewArgs(String),
+    MissingCRLF,
+    InvalidPrefix,
+    NoCommand
+}
 
-    let space = msg.find(' ');
-    if space == None {
-        return Err;
-    }
+pub fn extract_prefix(msg: &str) -> (&str, Result<Box<Source>, ParseError>) {
+    let space_index = match msg.find(' ') {
+        Some(space) => space,
+        None => return (msg, Err(ParseError::NoCommand))
+    };
     
-    let prefix = &msg[1..space];
-    let rest = &msg[space+1..];
+    let prefix = &msg[..space_index];
+    let rest = &msg[space_index+1..];
     
     // check prefix confirms to the correct format servername / (nick [ [ ! user ] @ host])
     let ex_matches: Vec<_> = prefix.match_indices('!').collect();
@@ -41,7 +45,7 @@ fn extract_prefix(msg: &str) -> Result<Ok(&str, Option<Box<Source>>), Err> {
                     || (at_matches.len() == 1 && ex_matches[0].0 > at_matches[0].0)
                 )
             ) {
-        return Err;
+        return (msg, Err(ParseError::InvalidPrefix));
     }
         
     //     
@@ -51,15 +55,19 @@ fn extract_prefix(msg: &str) -> Result<Ok(&str, Option<Box<Source>>), Err> {
     // according to the RFC, :nick is also a valid prefix,
     // but I don't know how else to distinguish server and user
     // except by the fact users usually have :nick!user@host
+    let name = String::from(&prefix_parts[0][..]);
+
+    // at this point length cannot be anything other than 1, 2 or 3
     if prefix_parts.len() == 1 {
-        Ok(rest, Some(Box::new(Source::Server(String::from(&name_parts[0])))))
-    } else if prefix_parts.len() > 1 {
-        let nick = String::from(&prefix_parts[0]);
-        let hostname = Some(String::from(&prefix_parts[1]));
-        let username =  if prefix_parts.len() == 2 {
-                            Some(String::from(&prefix_parts[1]))
+        let my_box: Box<Source> = Box::new(Source::Server(name));
+        (rest, Ok(my_box))
+    } else {
+        let hostname = Some(String::from(&prefix_parts[1][..]));
+        let username =  if prefix_parts.len() == 3 {
+                            Some(String::from(&prefix_parts[2][..]))
                         } else { None };
-        Ok(rest, Some(Box::new(Source::User(nick, username, hostname))))
+        let my_box: Box<Source> = Box::new(Source::User(name, username, hostname));
+        (rest, Ok(my_box))
     }
 }
     
@@ -74,36 +82,36 @@ fn split_colon_arg(msg: &str) -> (&str, Option<&str>) {
     }
 }
 
-pub enum CmdType {
-    Join,
-    Part,
-    Message,
-    Nick,
-    User,
-    Quit,
-    Channel
-}
+//pub enum CmdType {
+//    Join,
+//    Part,
+//    Message,
+//    Nick,
+//    User,
+//    Quit,
+//    Channel
+//}
 
 pub enum Command {
     Join(String), // #channel
     Part(String, Option<String>), // #channel, part-message
     Message(String, String), // dest (user/#channel), message
     Nick(String), // choose nickname
-    User(Option, u32, String), // choose username (might need addition parameters)
+    User(String, u32, String), // choose username (might need addition parameters)
     Quit(Option<String>), // quit-message
     Null // empty line
 }
 
-pub enum ParseError {
-    CommandNotRecognised(String),
-    TooFewArgs(CmdType, String),
-    MissingCRLF,
-    MisformedPrefix
+pub struct IRCMessage {
+//    cmd: CommandType,
+    cmd_params: Box<Command>,
+    src: Option<Box<Source>>
 }
 
 // parsing IRC messages :)
 // we'll also take ownership, calling function shouldn't need the original string anymore
-pub fn parse_message(message: &str) -> Result<Ok(Option<Box<Source>>, Box<Command>), Err(ParseError)> {
+// IRCMessage will contain both the Command and the Source (tho the latter is sometimes absent
+pub fn parse_message(mut message: &str) -> Result<IRCMessage, ParseError> {
     // make sure the message format is on point
     let crlf = &message[message.len()-2..];
     if crlf != "\r\n" {
@@ -115,14 +123,19 @@ pub fn parse_message(message: &str) -> Result<Ok(Option<Box<Source>>, Box<Comman
     // first we need to check for a colon (but only do anything with the first one)
     // anything before is space-separated, everything after the colon is a single argument,
     // usually a message
-    let (message, prefix) = extract_prefix(&message);
-    let msg_src;
-    match prefix {
-        Ok(val) => msg_src = val,
-        Err(_) => return Err(ParseError::MisformedPrefix)
-    }
+    let prefix = if &message[..1] == ":" {
+        message = &message[1..];
+        let (msg, resultant) = extract_prefix(&message);
+        message = msg;
+
+        // need to wrap return value in a Some
+        Some(match resultant {
+                Ok(value) => value,
+                Err(error_string) => return Err(error_string)
+        })
+    } else { None };
     let (message, colon_arg) = split_colon_arg(&message);
-    let args: Vec<&str> = message_string.split(' ').collect();
+    let mut args: Vec<&str> = message.split(' ').collect();
     if let Some(arg) = colon_arg {
         args.push(arg);
     }
@@ -133,8 +146,8 @@ pub fn parse_message(message: &str) -> Result<Ok(Option<Box<Source>>, Box<Comman
     match command {
         "JOIN" => {
             // error if not enough args
-            if args.len < 1 {
-                return Err(ParseError::TooFewArgs(CmdType::Join));
+            if args.len() < 1 {
+                return Err(ParseError::TooFewArgs(command.to_string()));
             }
             
             // anything else will be ignored, JOIN only needs a chan argument
@@ -143,50 +156,73 @@ pub fn parse_message(message: &str) -> Result<Ok(Option<Box<Source>>, Box<Comman
             // from the args vector - this way args will cleanly go out of scope
             let channel = String::from(args[0]);
 
-            // return Join command
-            Ok(msg_src, Box::new(Command::Join(channel)))
+            Ok(IRCMessage {
+                cmd_params: Box::new(Command::Join(channel)),
+                src: prefix
+            })
         }
         "PART" => {
             // error if no chan given
-            if args.len < 1 {
-                return Err(ParseError::TooFewArgs(CmdType::Part));
+            if args.len() < 1 {
+                return Err(ParseError::TooFewArgs(command.to_string()));
             }
 
             let channel = String::from(args[1]);
             // anything in rest will be ignored, JOIN only needs a chan argument
 
             // Option<String> is the expected type for Command::Part.part_message
-            let part_message: Option<String> = None;
-            if args.len > 2 {
+            let mut part_message: Option<String> = None;
+            if args.len() > 2 {
                 part_message = Some(String::from(args[2]));
             }
 
-            Ok(msg_src, Box::new(Command::Part(channel, part_message)))
+            Ok(IRCMessage {
+                cmd_params: Box::new(Command::Part(channel, part_message)),
+                src: prefix
+            })
         }
         "NICK" => {
             // error if no nick given
-            if args.len < 1 {
-                return Err(ParseError::TooFewArgs(CmdType::Nick));
+            if args.len() < 1 {
+                return Err(ParseError::TooFewArgs(command.to_string()));
             }
 
             let nick = String::from(args[1]);
 
-            Ok(msg_src, Box::new(Command::Nick(nick)))
+            // prepare return Box
+            Ok(IRCMessage {
+                cmd_params: Box::new(Command::Nick(nick)),
+                src: prefix
+            })
         }
         "USER" => {
             // total of 4 args required
-            if args.len < 4 {
-                return Err(ParseError::TooFewArgs(CmdType::User));
+            if args.len() < 4 {
+                return Err(ParseError::TooFewArgs(command.to_string()));
             }
             
             let username = String::from(args[0]);
-            let mode: u32 = args[1].parse();
+
+            // not sure if silently ignoring non-numbers
+            // for the mode field is canonical behaviour,
+            // but whatever
+            let mode: u32 = match args[1].parse() {
+                Ok(mode_number) => mode_number,
+                Err(_) => 0
+            };
+
+
+            // USER is specified as having an unused field, usually a * is supplied there
             //let ignored = args[2]
             let real_name = String::from(args[3]);
             
-            Ok(msg_src, Box::new(Command::User(username, mode, real_name)))
+            // prepare return Box
+            Ok(IRCMessage {
+                cmd_params: Box::new(Command::User(username, mode, real_name)),
+                src: prefix
+            })
         }
-        _ => Err(ParseError::CommandNotRecognised(String::from(_)));
+        _ => Err(ParseError::CommandNotRecognised(command.to_string()))
     }
 }
 
