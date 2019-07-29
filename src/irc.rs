@@ -20,7 +20,8 @@ pub enum ParseError {
     TooFewArgs(String),
     MissingCRLF,
     InvalidPrefix,
-    NoCommand
+    NoCommand,
+    EmptyLine
 }
 
 pub fn extract_prefix(msg: &str) -> (&str, Result<Box<Source>, ParseError>) {
@@ -99,7 +100,6 @@ pub enum Command {
     Nick(String), // choose nickname
     User(String, u32, String), // choose username (might need addition parameters)
     Quit(Option<String>), // quit-message
-    Null // empty line
 }
 
 pub struct IRCMessage {
@@ -111,6 +111,9 @@ pub struct IRCMessage {
 // parsing IRC messages :)
 // we'll also take ownership, calling function shouldn't need the original string anymore
 // IRCMessage will contain both the Command and the Source (tho the latter is sometimes absent
+// we want to use mostly &str operations for the parsing itself,
+// but we don't want to have to care about the fate of message,
+// so all the data structures we return will have new owned Strings
 pub fn parse_message(mut message: &str) -> Result<IRCMessage, ParseError> {
     // make sure the message format is on point
     let crlf = &message[message.len()-2..];
@@ -118,6 +121,11 @@ pub fn parse_message(mut message: &str) -> Result<IRCMessage, ParseError> {
         return Err(ParseError::MissingCRLF);
     } 
     message = &message[..message.len()-2];
+
+    // next check for ":" panics if we don't do this first!
+    if message.len() == 0 {
+        return Err(ParseError::EmptyLine);
+    }
 
     // I forgot how IRC protocol actually works
     // first we need to check for a colon (but only do anything with the first one)
@@ -154,10 +162,23 @@ pub fn parse_message(mut message: &str) -> Result<IRCMessage, ParseError> {
             // arg strings will be cloned before passing to Command::type(),
             // otherwise we will have lifetime problems, and we can't move stuff
             // from the args vector - this way args will cleanly go out of scope
-            let channel = String::from(args[0]);
+            let channel = args[0].to_string();
 
             Ok(IRCMessage {
                 cmd_params: Box::new(Command::Join(channel)),
+                src: prefix
+            })
+        }
+        "MSG" => {
+            if args.len() < 2 {
+                return Err(ParseError::TooFewArgs(command.to_string()));
+            }
+            
+            let target = args[0].to_string();
+            let message = args[1].to_string();
+
+            Ok(IRCMessage {
+                cmd_params: Box::new(Command::Message(target, message)),
                 src: prefix
             })
         }
@@ -167,13 +188,13 @@ pub fn parse_message(mut message: &str) -> Result<IRCMessage, ParseError> {
                 return Err(ParseError::TooFewArgs(command.to_string()));
             }
 
-            let channel = String::from(args[1]);
+            let channel = args[0].to_string();
             // anything in rest will be ignored, JOIN only needs a chan argument
 
             // Option<String> is the expected type for Command::Part.part_message
             let mut part_message: Option<String> = None;
-            if args.len() > 2 {
-                part_message = Some(String::from(args[2]));
+            if args.len() > 1 {
+                part_message = Some(args[1].to_string()); // don't forget to wrap the Option<T>s
             }
 
             Ok(IRCMessage {
@@ -187,9 +208,9 @@ pub fn parse_message(mut message: &str) -> Result<IRCMessage, ParseError> {
                 return Err(ParseError::TooFewArgs(command.to_string()));
             }
 
-            let nick = String::from(args[1]);
+            let nick = args[0].to_string();
 
-            // prepare return Box
+            // prepare return struct
             Ok(IRCMessage {
                 cmd_params: Box::new(Command::Nick(nick)),
                 src: prefix
@@ -201,24 +222,37 @@ pub fn parse_message(mut message: &str) -> Result<IRCMessage, ParseError> {
                 return Err(ParseError::TooFewArgs(command.to_string()));
             }
             
-            let username = String::from(args[0]);
+            let username = args[0].to_string();
 
             // not sure if silently ignoring non-numbers
             // for the mode field is canonical behaviour,
             // but whatever
-            let mode: u32 = match args[1].parse() {
-                Ok(mode_number) => mode_number,
+            let mode = match args[1].parse::<u32>() {
+                Ok(val) => val,
                 Err(_) => 0
             };
 
 
             // USER is specified as having an unused field, usually a * is supplied there
             //let ignored = args[2]
-            let real_name = String::from(args[3]);
+            let real_name = args[3].to_string();
             
-            // prepare return Box
+            // prepare return struct
             Ok(IRCMessage {
                 cmd_params: Box::new(Command::User(username, mode, real_name)),
+                src: prefix
+            })
+        }
+        "QUIT" => {
+            let quit_msg = if args.len() > 0 {
+                Some(args[0].to_string())
+            } else {
+                None
+            };
+            
+            // prepare return struct
+            Ok(IRCMessage {
+                cmd_params: Box::new(Command::Quit(quit_msg)),
                 src: prefix
             })
         }

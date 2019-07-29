@@ -38,6 +38,7 @@ fn main () {
                 if let Some(value) = msg {
                     println!("you left a message: {}", value);
                 }
+                break;
             }
             irc::Command::Part(chan, msg) => {
                 if let Some(value) = msg {
@@ -47,9 +48,7 @@ fn main () {
                 }
             }
             irc::Command::Message(dest, msg) =>
-                println!("you send message '{}' to {}", msg, dest),
-            irc::Command::Null =>
-                println!("received empty line")
+                println!("you send message '{}' to {}", msg, dest)
         }
 
         if let Some(source) = irc_msg_parsed.src {
