@@ -8,7 +8,7 @@
 // link: https://tools.ietf.org/html/rfc2812#section-2.3.1
 // plus an optional source field (for server messages, indicating origin)
 use crate::irc;
-use crate::irc::protocol_standards as rfc;
+use crate::irc::rfc_defs as rfc;
 
 // will want to change these types at some point
 #[derive(Debug)]
@@ -123,7 +123,7 @@ pub fn parse_message(mut message: &str) -> Result<ParsedMsg, ParseError> {
         }
     }
     let (message, colon_arg) = split_colon_arg(&message);
-    let n = rfc::MaxParams + 1;
+    let n = rfc::MAX_MSG_PARAMS + 1;
     if let Some(arg) = colon_arg {
             n -= 1;
     }
