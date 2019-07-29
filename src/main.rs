@@ -15,7 +15,8 @@ fn main () {
 	loop {
 		if let Some(string) = msg_buf.extract() {
 			println!("{}", string);
-			println!("index is now: {}", msg_buf.index);
+		} else {
+			break;
 		}
 	}
 }
