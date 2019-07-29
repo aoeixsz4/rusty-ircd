@@ -3,9 +3,131 @@
 // e.g. an enum type IRC_Command, which will include possible commands,
 // a communication buffer type used for server<->client communication
 
+
 const MESSAGE_SIZE: usize = 512;
+const AZ_STRING: str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 pub enum BufferError {
 	OverFlow,
+}
+
+// // since these won't be dynamic during run, it seems silly to use an actual hash table
+// const COMMAND_STRING_MAPPING: [(str, Command); 6] = [
+//	("JOIN", 
+fn is_AZ(&string: String) -> bool {
+	for &byte in string.as_bytes() {
+		if AZ_STRING.find(byte) == None {
+			return false;
+		}
+	}
+	return true;
+}
+
+// this lil function snatches up a word and returns the rest of the string
+// in an Option<String>, or just gives back the original String plus a None
+pub fn split_colon_arg(&mut message_string: String, delimiter) -> Option<String> {
+	if (let Some(colon_arg_index) = message_string.find(" :")) {
+		let colon_arg = String::from(&message_string[(colon_arg_index + 2)..]);
+		message_string.truncate(colon_arg_index);
+		colon_arg
+	} else {
+		None
+	}
+}
+
+pub enum Command {
+	Join(Option<String>), // #channel
+	Part(Option<String>, Option<String>), // #channel, part-message
+	Message(Option<String>,Option<String>), // dest (user/#channel), message
+	Nick(Option<String>), // choose nickname
+	User(Option<String>), // choose username (might need addition parameters)
+	Quit(Option<String>) // quit-message
+}
+
+pub enum ParseError {
+	CommandNotRecognised(String),
+	CommandNotAZ(String),
+	TooFewArguments(String)
+}
+
+
+// parsing IRC messages :)
+// we'll also take ownership, calling function shouldn't need the original string anymore
+pub fn parse_message(message_string: String) -> Result<Ok(Command), Err(ParseError)> {
+	let mut message_string = message_string.trim();
+
+	// I forgot how IRC protocol actually works
+	// first we need to check for a colon (but only do anything with the first one)
+	// anything before is space-separated, everything after the colon is a single argument,
+	// usually a message
+	let colon_arg = split_colon_arg(&mut message_string);
+	let args: Vec<&str> = message_string.split(' ').collect();
+	if let Some(arg) = colon_arg {
+		args.push(arg);
+	}
+
+	// first word is always a command
+	if !is_AZ(command_word) {
+		return Err(ParseError::CommandNotAZ(command_word));
+	}
+	
+	// command_type is an enum, but needs its parameters filled
+	// also need some checks for things like optional params
+	match &args[0] {
+		"JOIN" => {
+			// error if not enough args
+			if args.len < 2 {
+				return Err(ParseError::TooFewArgs("JOIN"));
+			}
+			
+			// anything else will be ignored, JOIN only needs a chan argument
+			// arg strings will be cloned before passing to Command::type(),
+			// otherwise we will have lifetime problems, and we can't move stuff
+			// from the args vector - this way args will cleanly go out of scope
+			let channel = args[1].clone();
+			if !valid_channel_name(channel) {
+				return Err(ParseError::InValidChan("JOIN", channel));
+			}
+
+			// return Join command
+			Ok(Command::Join(channel))
+		}
+		"PART" => {
+			// error if no chan given
+			if args.len < 2 {
+				return Err(ParseError::TooFewArguments("JOIN"));
+			}
+
+			let channel = args[1].clone();
+			// anything in rest will be ignored, JOIN only needs a chan argument
+			if !valid_channel_name(channel) {
+				return Err(ParseError::InValidChan("JOIN", channel));
+			}
+
+			// Option<String> is the expected type for Command::Part.part_message
+			let part_message: Option<String> = None;
+			if args.len > 2 {
+				part_message = Some(args[2].clone());
+			}
+
+			Ok(Command::Part(channel, part_message))
+		}
+		"NICK" => {
+			// error if no nick given
+			if args.len < 2 {
+				return Err(ParseError::TooFewArguments("JOIN"));
+			}
+
+			let nick = args[1].clone();
+			if !valid_nick_name(nick) {
+				return Err(ParseError::InValidNick("NICK", nick));
+			}
+
+			Ok(Command::Nick(nick))
+		}
+		"USER" => {
+			
+		_ => Err(ParseError::CommandNotRecognised(command_word))
+	}
 }
 
 

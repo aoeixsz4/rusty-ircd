@@ -1,29 +1,28 @@
-// IRC::client
+// irc::client
 // this file contains protocol defitions related to client commands coming to the server
 
-pub enum Command {
-	Join(String), // #channel
-	Part(String, Option<String>), // #channel, part-message
-	Message(String, String), // dest (user/#channel), message
-	Nick(String), // choose nickname
-	User(String), // choose username (might need addition parameters)
-	Quit(String), // quit-message
+pub struct Client { // is it weird/wrong to have an object with the same name as the module?
+	// will need a hash table for joined channels
+	nick: String,
+	username: String,
+	//channels: type unknown
+	socket: SocketType,
+	//flags: some sort of enum vector?
+	inbuf: super::MessageBuffer,
+	outbuf: super::MessageBuffer,
 }
 
-pub struct IO {
-	// and 512 is after all not huge
-	// this way, we allocate 1 MB of fixed sized buffers on the heap once per client
-	// if we make this an Object rather than just a normal struct, we can
-	// include here a write method, and a reference to a Socket type of some sort
-	out_buffer: super::MessageBuffer, // out -> to client
-	in_buffer: super::MessageBuffer, // in <- from client
-}
-
-impl IO {
-	pub fn new() -> IO {
-		IO {
-			mut out_buffer: super::MessageBuffer;
-			mut in_buffer: super::MessageBuffer;
+// externally, clients will probably be collected in a vector somewhere
+impl Client {
+	// since new clients will be created on a new connection event,
+	// we'll need a socket type as a parameter
+	pub fn new(socket: SocketType) -> Client {
+		Client {
+			mut nick: String::new(),
+			mut username: String::new(),
+			mut out_buffer: super::MessageBuffer,
+			mut in_buffer: super::MessageBuffer,
+			socket,
 		}
 	}
 
