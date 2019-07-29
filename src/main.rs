@@ -1,7 +1,6 @@
+mod parser;
 mod irc;
-use crate::irc::*;
 use std::io;
-use crate::irc::parse_message;
 
 fn main () {
     loop {
@@ -14,56 +13,59 @@ fn main () {
         if &irc_msg_buf[irc_msg_buf.len()-1..] == "\n" {
             irc_msg_buf.truncate(irc_msg_buf.len()-1);
         }
-        irc_msg_buf.extend("\r\n".chars());
 
-        let irc_msg_parsed = match parse_message(&irc_msg_buf[..]) {
-            Ok(cmd) => cmd,
+        let irc_msg_parsed = match parser::parse_message(&irc_msg_buf) {
+            Ok(msg) => msg,
             Err(msg) => {
                 println!("Error: {:?}", msg);
                 continue;
             }
         };
 
-        match *(irc_msg_parsed.cmd_params) {
-            irc::Command::Join(chan) =>
-                println!("you said: JOIN: {}", chan),
-            irc::Command::Nick(nick) =>
-                println!("you change your nick to {}", nick),
-            irc::Command::User(user, mode, real_name) => {
-                println!("sup, {}, your mode is {}", real_name, mode);
-                println!("welcome to the irc_daemon, {}", user);
-            }
-            irc::Command::Quit(msg) => {
-                println!("bye!");
-                if let Some(value) = msg {
-                    println!("you left a message: {}", value);
+        if let Some(prefix) = irc_msg_parsed.opt_prefix {
+            println!("got prefix!!");
+            match prefix {
+                parser::MsgPrefix::Name(name) => println!("nick/host: {}", name),
+                parser::MsgPrefix::Nick(nick) => println!("nick: {}", nick),
+                parser::MsgPrefix::NickHost(nick, host) => {
+                    match host {
+                        parser::HostType::HostName(host_name) =>
+                            println!("nick, host: {}, {}", nick, host_name),
+                        parser::HostType::HostAddrV4(ip_addr) =>
+                            println!("nick, ipv4addr: {}, {}", nick, ip_addr),
+                        parser::HostType::HostAddrV6(ip_addr) =>
+                            println!("nick, ipv6addr: {}, {}", nick, ip_addr)
+                    }
                 }
-                break;
-            }
-            irc::Command::Part(chan, msg) => {
-                if let Some(value) = msg {
-                    println!("now leaving channel {}, your part message: {}", chan, value);
-                } else {
-                    println!("now leaving channel: {}", chan);
+                parser::MsgPrefix::NickUserHost(nick, user, host) => {
+                    match host {
+                        parser::HostType::HostName(host_name) =>
+                            println!("nick, user, host: {}, {}, {}", nick, user, host_name),
+                        parser::HostType::HostAddrV4(ip_addr) =>
+                            println!("nick, user, ipv4addr: {}, {}, {}", nick, user, ip_addr),
+                        parser::HostType::HostAddrV6(ip_addr) =>
+                            println!("nick, ipv6addr: {}, {}, {}", nick, user, ip_addr)
+                    }
+                }
+                parser::MsgPrefix::Host(host) => {
+                    match host {
+                        parser::HostType::HostName(host_name) =>
+                            println!("host: {}", host_name),
+                        parser::HostType::HostAddrV4(ip_addr) =>
+                            println!("ipv4addr: {}", ip_addr),
+                        parser::HostType::HostAddrV6(ip_addr) =>
+                            println!("ipv6addr: {}", ip_addr)
+                    }
                 }
             }
-            irc::Command::Message(dest, msg) =>
-                println!("you send message '{}' to {}", msg, dest)
         }
 
-        if let Some(source) = irc_msg_parsed.src {
-            // now we can unwrap the actual source variants
-            match *source {
-                Source::Server(server_name) => println!("you are server: {}", server_name),
-                Source::User(nick, user, host) => {
-                    println!("Hi, {}!", nick);
-                    if let Some(name) = user {
-                        println!("Your username is {}", name);
-                    }
-                    if let Some(name) = host {
-                        println!("Your hostname is {}", name);
-                    }
-                }
+        println!("command is: {}", irc_msg_parsed.command);
+
+        if let Some(params) = irc_msg_parsed.opt_params {
+            println!("got some parameters");
+            for item in params.iter() {
+                println!("{}", item);
             }
         }
     }
