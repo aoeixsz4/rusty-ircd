@@ -1,7 +1,6 @@
+mod parser;
 mod irc;
-use crate::irc::*;
 use std::io;
-use crate::irc::parse_message;
 
 fn main () {
     loop {
@@ -16,7 +15,7 @@ fn main () {
         }
         irc_msg_buf.extend("\r\n".chars());
 
-        let irc_msg_parsed = match parse_message(&irc_msg_buf[..]) {
+        let irc_msg_parsed = match parser::parse_message(&irc_msg_buf[..]) {
             Ok(cmd) => cmd,
             Err(msg) => {
                 println!("Error: {:?}", msg);
@@ -54,8 +53,8 @@ fn main () {
         if let Some(source) = irc_msg_parsed.src {
             // now we can unwrap the actual source variants
             match *source {
-                Source::Server(server_name) => println!("you are server: {}", server_name),
-                Source::User(nick, user, host) => {
+                irc::Source::Server(server_name) => println!("you are server: {}", server_name),
+                irc::Source::User(nick, user, host) => {
                     println!("Hi, {}!", nick);
                     if let Some(name) = user {
                         println!("Your username is {}", name);
