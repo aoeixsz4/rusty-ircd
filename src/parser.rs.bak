@@ -1,16 +1,8 @@
-// this module deals with parsing IRC message strings, and returning
-// a Vec<&str> of parameters etc. to pass to the main protocol handlers
-// earlier vesions of this code dealt too much with things specific to certain commands
-// the parsers job should instead ensure messages conform to the standard structure
-// as defined in Augmented BNF in the RFC 2812, but without ensuring
-// that command-specific restrictions are adhered to (that will be done elsewhere in irc or
-// irc::command or so)
-// link: https://tools.ietf.org/html/rfc2812#section-2.3.1
+// this module deals with parsing IRC message strings, and producing
+// a data type containing the parsed command parameters,
 // plus an optional source field (for server messages, indicating origin)
 use crate::irc;
-use crate::irc::protocol_standards as rfc;
 
-// will want to change these types at some point
 #[derive(Debug)]
 pub enum ParseError {
     CommandNotRecognised(String),
@@ -22,7 +14,12 @@ pub enum ParseError {
 }
 
 // 
-fn parse_prefix(msg: &str) -> Result<Box<irc::Source>, ParseError> {
+fn extract_prefix(msg: &str) -> (&str, Result<Box<irc::Source>, ParseError>) {
+    let space_index = match msg.find(' ') {
+        Some(space) => space,
+        None => return (msg, Err(ParseError::NoCommand))
+    };
+    
     // we should probably also return an error if the space occurs immediately after the colon
     if space_index == 0 {
     	return (msg, Err(ParseError::InvalidPrefix));
@@ -88,46 +85,36 @@ fn split_colon_arg(msg: &str) -> (&str, Option<&str>) {
 // we want to use mostly &str operations for the parsing itself,
 // but we don't want to have to care about the fate of message,
 // so all the data structures we return will have new owned Strings
-//    Augmented BNF notation for general message strcture
-//    message    =  [ ":" prefix SPACE ] command [ params ] crlf
-pub fn parse_message(mut message: &str) -> Result<ParsedMsg, ParseError> {
+pub fn parse_message(mut message: &str) -> Result<irc::Message, ParseError> {
     // make sure the message format is on point
-    if message.len() <= 2 {
-        return Err(ParseError::EmptyLine);
-    }
-
-    // deal with CRLF
     let crlf = &message[message.len()-2..];
     if crlf != "\r\n" {
         return Err(ParseError::MissingCRLF);
-    }
+    } 
     message = &message[..message.len()-2];
 
-    // check for a message prefix
-    // should be bounded by a ':' at the very start of the string
-    // and a
-    let mut origin: Option<&irc::Source> = None;
+    // next check for ":" panics if we don't do this first!
+    if message.len() == 0 {
+        return Err(ParseError::EmptyLine);
+    }
 
-    if message.bytes().nth(0) == ':' {
-        // check for a space
-        if let Some(index) = message.find(' ') {
-            let prefix = &message[1..index];
-            if prefix.len() == 0 {
-                return Err(ParseError::InvalidPrefix);
-            }
-            message = &message[index+1..];
-            match parse_prefix(&prefix) {
-                Ok(val) => origin = Some(val),
-                Err(err) => return Err(err)
-            }
-        }
-    }
+    // I forgot how IRC protocol actually works
+    // first we need to check for a colon (but only do anything with the first one)
+    // anything before is space-separated, everything after the colon is a single argument,
+    // usually a message
+    let prefix = if &message[..1] == ":" {
+        message = &message[1..];
+        let (msg, resultant) = extract_prefix(&message);
+        message = msg;
+
+        // need to wrap return value in a Some
+        Some(match resultant {
+                Ok(value) => value,
+                Err(error_string) => return Err(error_string)
+        })
+    } else { None };
     let (message, colon_arg) = split_colon_arg(&message);
-    let n = rfc::MaxParams + 1;
-    if let Some(arg) = colon_arg {
-            n -= 1;
-    }
-    let mut args: Vec<&str> = message.splitn(' ', n).collect();
+    let mut args: Vec<&str> = message.split(' ').collect();
     if let Some(arg) = colon_arg {
         args.push(arg);
     }
