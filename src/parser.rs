@@ -14,7 +14,7 @@ pub enum ParseError {
 }
 
 // 
-fn extract_prefix(msg: &str) -> (&str, Result<Box<Source>, ParseError>) {
+fn extract_prefix(msg: &str) -> (&str, Result<Box<irc::Source>, ParseError>) {
     let space_index = match msg.find(' ') {
         Some(space) => space,
         None => return (msg, Err(ParseError::NoCommand))
@@ -56,14 +56,14 @@ fn extract_prefix(msg: &str) -> (&str, Result<Box<Source>, ParseError>) {
 
     // at this point length cannot be anything other than 1, 2 or 3
     if prefix_parts.len() == 1 {
-        let my_box: Box<Source> = Box::new(Source::Server(name));
+        let my_box: Box<irc::Source> = Box::new(irc::Source::Server(name));
         (rest, Ok(my_box))
     } else {
         let hostname = Some(String::from(&prefix_parts[1][..]));
         let username =  if prefix_parts.len() == 3 {
                             Some(String::from(&prefix_parts[2][..]))
                         } else { None };
-        let my_box: Box<Source> = Box::new(Source::User(name, username, hostname));
+        let my_box: Box<irc::Source> = Box::new(irc::Source::User(name, username, hostname));
         (rest, Ok(my_box))
     }
 }
@@ -81,7 +81,7 @@ fn split_colon_arg(msg: &str) -> (&str, Option<&str>) {
 
 // parsing IRC messages :)
 // we'll also take ownership, calling function shouldn't need the original string anymore
-// IRCMessage will contain both the Command and the Source (tho the latter is sometimes absent
+// irc::Message will contain both the Command and the Source (tho the latter is sometimes absent
 // we want to use mostly &str operations for the parsing itself,
 // but we don't want to have to care about the fate of message,
 // so all the data structures we return will have new owned Strings

@@ -1,6 +1,6 @@
 // this module will contain protocol definitions
 // and core data types and handlers for IRC commands
-user parser::ParseError;
+//use crate::parser;
 
 pub enum Source {
     Server(String),
@@ -26,7 +26,7 @@ pub enum Command {
     Quit(Option<String>), // quit-message
 }
 
-pub struct IRCMessage {
+pub struct Message {
     pub cmd_params: Box<Command>,// commands and their parameters are defined as an enum above
     pub src: Option<Box<Source>> // important when servers relay commands originating from their users
 }
