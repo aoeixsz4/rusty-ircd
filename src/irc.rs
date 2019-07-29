@@ -104,8 +104,8 @@ pub enum Command {
 
 pub struct IRCMessage {
 //    cmd: CommandType,
-    pub cmd_params: Box<Command>,
-    pub src: Option<Box<Source>>
+    pub cmd_params: Box<Command>,// commands and their parameters are defined as an enum above
+    pub src: Option<Box<Source>> // important when servers relay commands originating from their users
 }
 
 // parsing IRC messages :)
