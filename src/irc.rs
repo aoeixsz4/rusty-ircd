@@ -2,6 +2,8 @@
 // and core data types and handlers for IRC commands
 //use crate::parser;
 
+pub mod rfc_defs;
+
 pub enum Source {
     Server(String),
     User(String, Option<String>, Option<String>)
