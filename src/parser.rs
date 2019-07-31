@@ -7,8 +7,6 @@
 // irc::command or so)
 // link: https://tools.ietf.org/html/rfc2812#section-2.3.1
 // plus an optional source field (for server messages, indicating origin)
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr}
-use crate::irc;
 use crate::irc::rfc_defs as rfc;
 
 // will want to change these types at some point
@@ -24,24 +22,26 @@ pub enum ParseError {
 
 pub enum HostType {
     HostName(String),
-    HostAddr(IpAddr)
+    HostAddrV4(String),
+    HostAddrV6(String)
 }
 
 pub enum MsgPrefix {
     Name(String), // generic for when we don't know if a name is a nickname or a hostname - special case
+    Nick(String), // for when we can guess it's a nick and not a host, but have no other info
     NickHost(String, HostType),
     NickUserHost(String, String, HostType),
     Host(HostType)
 }
 
-pub struct ParseMsg {
-    prefix: Option<MsgPrefix>,
-    command: String,
+pub struct ParsedMsg {
+    pub opt_prefix: Option<MsgPrefix>,
+    pub command: String,
     // NB: our parser first makes a Vec<&str>, where things will still point to stuff
     // in whatever the message slice sent to parse_message() was given a borrow of
     // params could also be a &[String], or an explicit array of 15 Strings,
     // but in the former case who owns the String array borrowed from?
-    params: Option<Vec<String>>
+    pub opt_params: Option<Vec<String>>
 }
 
 // parsing IRC messages :)
@@ -71,7 +71,7 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
     // now we want to parse it using the parse_prefix() function
     let opt_prefix: Option<MsgPrefix> = if let Some(prefix_string) = opt_prefix_string {
          match parse_prefix(prefix_string) {
-             Ok(val) => opt_prefix = Some(val),
+             Ok(val) => Some(val),
              Err(err_typ) => return Err(err_typ)
          }
     } else {
@@ -85,21 +85,21 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
     let param_substring: &str;
     match msg_body.find(' ') {
         Some(index) => {
-            command = &body[..index].to_string();
-            if !rfc::is_valid_command(&command) {
+            command = msg_body[..index].to_string();
+            if !rfc::valid_command(&command) {
                 return Err(ParseError::InvalidCommand);
             }
-            param_substring = &body[index+1..];
+            param_substring = &msg_body[index+1..];
         }
         None => {
-            command = body.to_string();
-            if !rfc::is_valid_command(&command) {
+            command = msg_body.to_string();
+            if !rfc::valid_command(&command) {
                 return Err(ParseError::InvalidCommand);
             } else {
-                return Ok(ParseMsg {
-                    prefix: opt_prefix,
+                return Ok(ParsedMsg {
+                    opt_prefix,
                     command,
-                    params: None
+                    opt_params: None
                 });
             }
         }
@@ -107,22 +107,26 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
 
     // check for and split off the trailing argument
     let (middle, opt_trail) = split_colon_arg(&param_substring);
-    let param_slices: Vec<&str>;
-    match opt_trail {
-        Some(trail_arg) => {
+
+    // can't make an unitialised param_slices in the outer scope,
+    // assign in the if clauses, and then use param_slices
+    // elsewhere in this scope as the compiler doesn't know it's
+    // definitely going to be initialised, the let = match {}; thing
+    // fixes this hopefully
+    let mut param_slices: Vec<&str> = match opt_trail {
+        Some(trail_arg) if middle.split(' ').count() < rfc::MAX_MSG_PARAMS => {
             // how many spaces would we have for 15 parameters? 14 spaces,
             // and if we have 15 parameters in *middle*, the last one has to
             // swallow up trailing - so we used .splitn() on the whole of param_substring
-            if middle.split(' ').count() < rfc::MAX_MSG_PARAMS {
-                // in this case, however, we only splitn on the middle part
-                param_slices = middle.splitn(rfc::MAX_MSG_PARAMS - 1, ' ').collect();
-                param_slices.push(&trail_arg);
-            }
+            // in this case, however, we only splitn on the middle part
+            let mut temp: Vec<&str> = middle.splitn(rfc::MAX_MSG_PARAMS - 1, ' ').collect();
+            temp.push(&trail_arg);
+            temp
         }
         // this catches both the case of no trailing arg with a colon,
         // and the case where there is a " :" found, but there are already too many params
-        _ => param_slices = param_substring.splitn(rfc::MAX_MSG_PARAMS, ' ').collect()
-    }
+        _ => param_substring.splitn(rfc::MAX_MSG_PARAMS, ' ').collect()
+    };
 
     // now we've parsed them, but before giving them back to the caller, we want to copy everything
     // from the string slices into some new Vec<String>, which we can pass ownership of along
@@ -132,7 +136,7 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
     }
 
     // return the stuff
-    Ok(ParseMsg {
+    Ok(ParsedMsg {
         opt_prefix,
         command,
         opt_params: Some(params)
@@ -185,7 +189,7 @@ fn parse_prefix(msg: &str) -> Result<MsgPrefix, ParseError> {
         let host = first_split[1];
         // in this case we must have some sort of nick@host or possibly nick!user@host type
         // thing, so let's deal with that first...
-        let second_split = first_split[0].splitn(2, '!').collect();
+        let second_split: Vec<&str> = first_split[0].splitn(2, '!').collect();
         if second_split.len() == 2 {
             let (nick, user) = (second_split[0], second_split[1]);
             if !rfc::valid_user(user) {
@@ -215,7 +219,7 @@ fn parse_prefix(msg: &str) -> Result<MsgPrefix, ParseError> {
         if !rfc::valid_nick(name) {
             // server case
             match parse_host(name) {
-                Ok(host_type) => Ok(MsgPrefix::Host(name.to_string(), host_type)),  // we got a host :D
+                Ok(host_type) => Ok(MsgPrefix::Host(host_type)),  // we got a host :D
                 Err(err_typ) => Err(err_typ) // something went wrong...
             }
         } else {
@@ -232,11 +236,13 @@ fn parse_prefix(msg: &str) -> Result<MsgPrefix, ParseError> {
 
 // this host parsing code will assign whether we have a regular hostname (and if it's valid),
 // or an ipv4/ipv6 address
+// decided not to use net::IpAddr here in the parser,
+// addresses may possibly be converted into proper formats elsewhere if needed
 fn parse_host(host_string: &str) -> Result<HostType, ParseError> {
     if rfc::valid_ipv4_addr(host_string) {
-        Ok(HostType::IpAddr(Ipv4Addr::from_string(host_string)))
+        Ok(HostType::HostAddrV4(host_string.to_string()))
     } else if rfc::valid_ipv6_addr(host_string) {
-        Ok(HostType::IpAddr(Ipv6Addr::from_string(host_string)))
+        Ok(HostType::HostAddrV6(host_string.to_string()))
     } else if rfc::valid_hostname(host_string) {
         Ok(HostType::HostName(host_string.to_string()))
     } else {
