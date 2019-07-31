@@ -1,6 +1,7 @@
 fn main () {
-    let message = ":nick!user@host ASDF irc command bla bla stuff :tailing mother fucking args";
+//    let message = ":nick!user@host ASDF irc command bla bla stuff :tailing mother fucking args";
 //    let message = ":nick!user@host";
+    let message = ":";
     let (opt_prefix, opt_msg_body) = find_prefix(message);
 
     let msg_body: &str = if let Some(substr) = opt_msg_body {
