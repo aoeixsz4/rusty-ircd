@@ -117,6 +117,9 @@ fn valid_hostname (hostname: &str) -> bool {
 // but i think maybe it's supposed to mean "-" shouldn't be at the end OR start
 fn valid_shortname (shortname: &str) -> bool {
     // exception if first or last letter is "-"
+    if shortname.len() == 0 {
+        return false;
+    }
     if &shortname[..1] != "-" && &shortname[..shortname.len()-1] != "-" {
         let mut allowed = String::new();
         allowed.push_str(LETTER);
@@ -159,10 +162,10 @@ fn valid_channel (channame: &str) -> bool {
     // a channel name can be split into two chanstrings with exactly one ':'
     // but otherwise chanstrings cannot contain ':' but are otherwise 
     // quite permissive
-    let (first_char, mut rest) = (channame.as_bytes()[0] as char, &channame[1..]);
-    if rest.len() == 0 {
+    if channame.len() < 2 {
         return false;
     }
+    let (first_char, mut rest) = (channame.as_bytes()[0] as char, &channame[1..]);
     match first_char {
         '&' | '+' | '#' => (),
         '!' if rest.len() > 5 => {

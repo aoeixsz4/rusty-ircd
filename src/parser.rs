@@ -16,7 +16,10 @@ use crate::irc::rfc_defs as rfc;
 pub enum ParseError {
     InvalidPrefix,
     NoCommand,
-    InvalidCommand
+    InvalidCommand,
+    InvalidNick,
+    InvalidUser,
+    InvalidHost
 }
 
 pub enum HostType {
@@ -173,51 +176,71 @@ fn get_prefix(message: &str) -> (Option<&str>, Option<&str>) {
 // parse the prefix part of an IRC message
 // with preceding colon and delimiting space stripped off
 fn parse_prefix(msg: &str) -> Result<MsgPrefix, ParseError> {
-    // we should probably also return an error if the space occurs immediately after the colon
-    if space_index == 0 {
-    	return (msg, Err(ParseError::InvalidPrefix));
-    }
-    
-    // split into two new slices
-    let prefix = &msg[..space_index];
-    let rest = &msg[space_index+1..];
-    
-    // check prefix confirms to the correct format servername / (nick [ [ ! user ] @ host])
-    let ex_matches: Vec<_> = prefix.match_indices('!').collect();
-    let at_matches: Vec<_> = prefix.match_indices('@').collect();
-    if  ex_matches.len() > 1        // max one !
-        || at_matches.len() > 1     // max one @
-        || (
-            ex_matches.len() == 1
-            &&  (
-                    at_matches.len() == 0   // nick!user is not valid
-                                            // nick@user!host is also not valid
-                    || (at_matches.len() == 1 && ex_matches[0].0 > at_matches[0].0)
-                )
-            ) {
-        return (msg, Err(ParseError::InvalidPrefix));
-    }
-        
-    //     
-    let prefix_parts: Vec<&str> = prefix.split(|c| c == '@' || c == '!').collect();
+    // start over with this...,
+    // first, let's tokenize with '@'
+    let first_split: Vec<&str> = msg.splitn(2, '@').collect();
+    let name: &str = first_split[0];
 
-    // usually server
-    // according to the RFC, :nick is also a valid prefix,
-    // but I don't know how else to distinguish server and user
-    // except by the fact users usually have :nick!user@host
-    let name = String::from(&prefix_parts[0][..]);
-
-    // at this point length cannot be anything other than 1, 2 or 3
-    if prefix_parts.len() == 1 {
-        let my_box: Box<irc::Source> = Box::new(irc::Source::Server(name));
-        (rest, Ok(my_box))
+    if first_split.len() == 2 {
+        let host = first_split[1];
+        // in this case we must have some sort of nick@host or possibly nick!user@host type
+        // thing, so let's deal with that first...
+        let second_split = first_split[0].splitn(2, '!').collect();
+        if second_split.len() == 2 {
+            let (nick, user) = (second_split[0], second_split[1]);
+            if !rfc::valid_user(user) {
+                Err(ParseError::InvalidUser)
+            } else if !rfc::valid_nick(nick) {
+                Err(ParseError::InvalidNick)
+            } else {
+                match parse_host(host) {
+                    Ok(host_type) =>
+                        Ok(MsgPrefix::NickUserHost(nick.to_string(), user.to_string(), host_type)),
+                    Err(err_type) => Err(err_type)
+                }
+            }
+        } else {
+            let nick = name;
+            if !rfc::valid_nick(nick) {
+                Err(ParseError::InvalidNick)
+            } else {
+                match parse_host(host) {
+                    Ok(host_type) =>
+                        Ok(MsgPrefix::NickHost(nick.to_string(), host_type)),
+                    Err(err_type) => Err(err_type)
+                }
+            }
+        }
     } else {
-        let hostname = Some(String::from(&prefix_parts[1][..]));
-        let username =  if prefix_parts.len() == 3 {
-                            Some(String::from(&prefix_parts[2][..]))
-                        } else { None };
-        let my_box: Box<irc::Source> = Box::new(irc::Source::User(name, username, hostname));
-        (rest, Ok(my_box))
+        if !rfc::valid_nick(name) {
+            // server case
+            match parse_host(name) {
+                Ok(host_type) => Ok(MsgPrefix::Host(name.to_string(), host_type)),  // we got a host :D
+                Err(err_typ) => Err(err_typ) // something went wrong...
+            }
+        } else {
+            // if we didn't get an @, and the nick is valid
+            // we can't actually be totally sure if we have a 
+            // nick or a host - tho we could rule out host with additional checks i suppose
+            match parse_host(name) {
+                Ok(_) => Ok(MsgPrefix::Name(name.to_string())),   // valid as host OR nick
+                Err(_) => Ok(MsgPrefix::Nick(name.to_string()))     // only valid as nick
+            }
+        }
+    }
+}
+
+// this host parsing code will assign whether we have a regular hostname (and if it's valid),
+// or an ipv4/ipv6 address
+fn parse_host(host_string: &str) -> Result<HostType, ParseError> {
+    if rfc::valid_ipv4_addr(host_string) {
+        Ok(HostType::IpAddr(Ipv4Addr::from_string(host_string)))
+    } else if rfc::valid_ipv6_addr(host_string) {
+        Ok(HostType::IpAddr(Ipv6Addr::from_string(host_string)))
+    } else if rfc::valid_hostname(host_string) {
+        Ok(HostType::HostName(host_string.to_string()))
+    } else {
+        Err(ParseError::InvalidHost)
     }
 }
     
