@@ -68,12 +68,9 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
     };
 
     // let's handle the case here where we have a prefix string,
-    // now we want to parse it using the parse_prefix() function
+    // then we want to parse it using the parse_prefix() function
     let opt_prefix: Option<MsgPrefix> = if let Some(prefix_string) = opt_prefix_string {
-         match parse_prefix(prefix_string) {
-             Ok(val) => Some(val),
-             Err(err_typ) => return Err(err_typ)
-         }
+        Some(parse_prefix(prefix_string)?)
     } else {
         None
     };
@@ -197,35 +194,26 @@ fn parse_prefix(msg: &str) -> Result<MsgPrefix, ParseError> {
             } else if !rfc::valid_nick(nick) {
                 Err(ParseError::InvalidNick)
             } else {
-                match parse_host(host) {
-                    Ok(host_type) =>
-                        Ok(MsgPrefix::NickUserHost(nick.to_string(), user.to_string(), host_type)),
-                    Err(err_type) => Err(err_type)
-                }
+                Ok(MsgPrefix::NickUserHost(nick.to_string(), user.to_string(), parse_host(host)?))
             }
         } else {
             let nick = name;
             if !rfc::valid_nick(nick) {
                 Err(ParseError::InvalidNick)
             } else {
-                match parse_host(host) {
-                    Ok(host_type) =>
-                        Ok(MsgPrefix::NickHost(nick.to_string(), host_type)),
-                    Err(err_type) => Err(err_type)
-                }
+                Ok(MsgPrefix::NickHost(nick.to_string(), parse_host(host)?))
             }
         }
     } else {
         if !rfc::valid_nick(name) {
             // server case
-            match parse_host(name) {
-                Ok(host_type) => Ok(MsgPrefix::Host(host_type)),  // we got a host :D
-                Err(err_typ) => Err(err_typ) // something went wrong...
-            }
+            Ok(MsgPrefix::Host(parse_host(name)?))  // we got a host :D
         } else {
             // if we didn't get an @, and the nick is valid
             // we can't actually be totally sure if we have a 
             // nick or a host - tho we could rule out host with additional checks i suppose
+            // in this case we keep the match thing because we don't actually want to
+            // treat this "error" as an error
             match parse_host(name) {
                 Ok(_) => Ok(MsgPrefix::Name(name.to_string())),   // valid as host OR nick
                 Err(_) => Ok(MsgPrefix::Nick(name.to_string()))     // only valid as nick
