@@ -1,73 +1,73 @@
-mod parser;
+extern crate tokio;
+extern crate futures;
+#[macro_use]
 mod irc;
-use std::io;
+mod buffer;
+mod client;
+mod parser;
 
-fn main () {
-    loop {
-        let mut irc_msg_buf = String::new();
-        
-        // this gives us a String ending in LF, we want CR-LF
-        io::stdin().read_line(&mut irc_msg_buf)
-            .expect("Failed to read line");
-        
-        if &irc_msg_buf[irc_msg_buf.len()-1..] == "\n" {
-            irc_msg_buf.truncate(irc_msg_buf.len()-1);
-        }
+use std::sync::{Mutex, Arc};
+use std::net::SocketAddr;
+use std::collections::HashMap;
+use tokio::net::{TcpListener, TcpStream};
+use crate::buffer::MessageBuffer;
+use crate::client::{Client, ClientFuture, ClientList};
+use futures::{task, Stream};
 
-        let irc_msg_parsed = match parser::parse_message(&irc_msg_buf) {
-            Ok(msg) => msg,
-            Err(msg) => {
-                println!("Error: {:?}", msg);
-                continue;
-            }
-        };
+// will want to at some point merge this with existing client and messagebuffer code in client.rs
+// and buffer.rs
 
-        if let Some(prefix) = irc_msg_parsed.opt_prefix {
-            println!("got prefix!!");
-            match prefix {
-                parser::MsgPrefix::Name(name) => println!("nick/host: {}", name),
-                parser::MsgPrefix::Nick(nick) => println!("nick: {}", nick),
-                parser::MsgPrefix::NickHost(nick, host) => {
-                    match host {
-                        parser::HostType::HostName(host_name) =>
-                            println!("nick, host: {}, {}", nick, host_name),
-                        parser::HostType::HostAddrV4(ip_addr) =>
-                            println!("nick, ipv4addr: {}, {}", nick, ip_addr),
-                        parser::HostType::HostAddrV6(ip_addr) =>
-                            println!("nick, ipv6addr: {}, {}", nick, ip_addr)
-                    }
-                }
-                parser::MsgPrefix::NickUserHost(nick, user, host) => {
-                    match host {
-                        parser::HostType::HostName(host_name) =>
-                            println!("nick, user, host: {}, {}, {}", nick, user, host_name),
-                        parser::HostType::HostAddrV4(ip_addr) =>
-                            println!("nick, user, ipv4addr: {}, {}, {}", nick, user, ip_addr),
-                        parser::HostType::HostAddrV6(ip_addr) =>
-                            println!("nick, ipv6addr: {}, {}, {}", nick, user, ip_addr)
-                    }
-                }
-                parser::MsgPrefix::Host(host) => {
-                    match host {
-                        parser::HostType::HostName(host_name) =>
-                            println!("host: {}", host_name),
-                        parser::HostType::HostAddrV4(ip_addr) =>
-                            println!("ipv4addr: {}", ip_addr),
-                        parser::HostType::HostAddrV6(ip_addr) =>
-                            println!("ipv6addr: {}", ip_addr)
-                    }
-                }
-            }
-        }
+fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFuture {
+    // borrow checker complains about mutex locked clients
+    // borrowing stuff when a move happens
+    // so we can deliberately descope it before that
+    // scope id here to use later
+    let mut id = 0;
+    let client = {
+        let mut clients = clients.lock().unwrap();
+        id = clients.next_id;
+        let client = Arc::new(Mutex::new(Client::new(id, task::current(), sock)));
+        // actual hashmap is inside ClientList struct
+        clients.map.insert(id, Arc::clone(&client));
 
-        println!("command is: {}", irc_msg_parsed.command);
-
-        if let Some(params) = irc_msg_parsed.opt_params {
-            println!("got some parameters");
-            for item in params.iter() {
-                println!("{}", item);
-            }
-        }
+        // increment id value, this will only ever go up, integer overflow will wreak havoc,
+        // but i doubt we reach enough clients for this to happen - should
+        // be handled in any final release of code though, *just in case*
+        clients.next_id += 1;   
+        println!("client connected: id = {}", clients.next_id);
+        client
+    }; // drop mutex locked clients list
+    // here we still keep ownership of a fresh Arc<Mutex<ClientList>> from outside this fn call
+    // we can now return a future containing client data and a pointer to the client list,
+    // and we don't have any reference cycles
+    ClientFuture {
+        client: Arc::clone(&client),
+        client_list: clients,
+        id,
+        first_poll: true
     }
+}
+        
+
+fn main() {
+    let addr = "127.0.0.1:6667".parse::<SocketAddr>().unwrap();
+    // Ups, this will just try to connect to above address,
+    // we want to bind to it
+    let listener = TcpListener::bind(&addr).unwrap();
+    let clients = Arc::new(Mutex::new(ClientList {
+        next_id: 0,
+        map: HashMap::new()
+    }));
+
+    let server = listener.incoming()
+        .map_err(|e| println!("failed to accept stream, error = {:?}", e))
+        .for_each(move |sock| {
+            // clone needs to happen before the function call, otherwise clients is moved into process_socket
+            // and then we don't get it back for the next iteration of the loop
+            let clients = Arc::clone(&clients);         
+            tokio::spawn(process_socket(sock, clients))
+        });
+
+    tokio::run(server);
 }
 
