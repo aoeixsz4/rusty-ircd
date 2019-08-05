@@ -4,6 +4,7 @@
 
 pub mod rfc_defs;
 use std::net{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Mutex;
 use crate::client;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
@@ -111,24 +112,32 @@ pub struct Channel {
     topic: String
 }
 
+// when we want to do all this with concurrency,
+// we could wrap each HashMap in a Mutex, while the
+// Core itself will just have immutable borrows
+// when a hashmap has been used to obtain a User, Channel or Server,
+// again a Mutex wrapper will be needed, and used for as short a time
+// as possible in every case
+// commands probably doesn't need a Mutex, it will be populated once,
+// then remain the same
 pub struct Core {
-    clients: HashMap<u64, client::Client>,  // maps client IDs to clients
-    nicks: HashMap<String, Host>,           // maps nicknames to unique ids
-    user_ids: HashMap<u64, User>,           // maps user IDs to users
-    channels: HashMap<String, Channel>,     // maps channames to Channel data structures
-    server_ids: HashMap<u64, Server>,       // maps server IDs to servers
-    commands: HashMap<String, Command>      // map of commands
+    clients: Mutex<HashMap<u64, client::Client>>,       // maps client IDs to clients
+    nicks: Mutex<HashMap<String, u64>>,                 // maps nicknames to unique ids
+    users: Mutex<HashMap<u64, Mutex<User>>>,            // maps user IDs to users
+    channels: Mutex<HashMap<String, Mutex<Channel>>>,   // maps channames to Channel data structures
+    servers: Mutex<HashMap<u64, Mutex<Server>>>,        // maps server IDs to servers
+    commands: HashMap<String, Command>                  // map of commands
 }
 
 // init hash tables
 impl Core {
     pub fn init () -> Core {
         // initialize hash tables for clients, servers, commands
-        let clients = Vec::new();
-        let nicks = HashMap::new();
-        let commands = HashMap::new();
-        let servers Vec<String> = Vec::new();
-        let channels = HashMap::new();
+        let clients = Mutex::new(HashMap::new());
+        let nicks = Mutex::new(HashMap::new());
+        let mut commands = HashMap::new();
+        let servers  = Mutex::new(HashMap::new());
+        let channels = Mutex::new(HashMap::new());
         Core {
             clients,
             nicks,
