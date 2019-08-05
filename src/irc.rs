@@ -121,7 +121,7 @@ pub struct Channel {
 // commands probably doesn't need a Mutex, it will be populated once,
 // then remain the same
 pub struct Core {
-    clients: Mutex<HashMap<u64, client::Client>>,       // maps client IDs to clients
+    clients: Mutex<HashMap<u64, Mutex<client::Client>>>,// maps client IDs to clients
     nicks: Mutex<HashMap<String, u64>>,                 // maps nicknames to unique ids
     users: Mutex<HashMap<u64, Mutex<User>>>,            // maps user IDs to users
     channels: Mutex<HashMap<String, Mutex<Channel>>>,   // maps channames to Channel data structures
