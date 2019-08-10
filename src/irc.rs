@@ -3,8 +3,9 @@
 //use crate::parser;
 
 pub mod rfc_defs;
-use std::net{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Mutex;
+use std::collections::HashMap;
 use crate::client;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
@@ -120,6 +121,9 @@ pub struct Channel {
 // as possible in every case
 // commands probably doesn't need a Mutex, it will be populated once,
 // then remain the same
+// do we also need to wrap these in Arc<T> pointers? :/
+// maybe it's possible just to have the Core in an Arc<T>,
+// and give each thread a pointer to the core?
 pub struct Core {
     clients: Mutex<HashMap<u64, Mutex<client::Client>>>,// maps client IDs to clients
     nicks: Mutex<HashMap<String, u64>>,                 // maps nicknames to unique ids
@@ -137,11 +141,14 @@ impl Core {
         let nicks = Mutex::new(HashMap::new());
         let mut commands = HashMap::new();
         let servers  = Mutex::new(HashMap::new());
+        let users = Mutex::new(HashMap::new());
         let channels = Mutex::new(HashMap::new());
         Core {
             clients,
             nicks,
             commands,
+            channels,
+            users,
             servers
         }
     }
