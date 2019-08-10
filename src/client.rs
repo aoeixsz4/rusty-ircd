@@ -3,7 +3,7 @@
 use crate::buffer;
 use crate::irc;
 use crate::parser;
-use std::net{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub enum ClientCommand {
     Empty
@@ -33,9 +33,9 @@ impl Client {
     // will also be necessary that all threads can access every client object
     pub fn new(host: irc::Host) -> Client {
         Client {
-            mut host,
-            mut outbuf: super::MessageBuffer::new(),
-            mut inbuf: super::MessageBuffer::new(),
+            host,
+            outbuf: buffer::MessageBuffer::new(),
+            inbuf: buffer::MessageBuffer::new(),
             //socket,
         }
     }
@@ -52,8 +52,9 @@ impl Client {
 
         // i will insist that the event handler doesn't hand us empty lines
         assert!(command_string.len() != 0);
-        let parsed_msg = parser::parse_message(command_string)?;
+        let parsed_msg = parser::parse_message(&command_string)?;
 
         // do something with the parsed message, irc.rs code needs to get involved
+        Ok(ClientCommand::Empty)
     }
 }

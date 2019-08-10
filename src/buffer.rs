@@ -29,6 +29,15 @@ impl MessageBuffer {
         }
         self.index = self.index - start_index;  // there was a bug here! index should be shifted, not reset
     }
+    
+    fn get_eol (&mut self) -> Option<usize> {
+        for i in 0..self.index - 1 {
+            if self.buffer[i] == '\r' && self.buffer[i + 1] == '\n' {
+                return Some(i);
+            }
+        }
+        None
+    }
 
     // we only need this for input buffers, so
     // might make more sense to implement in ClientIO?
@@ -41,7 +50,7 @@ impl MessageBuffer {
     // the line itself, already clipped
     pub fn extract_ln(&mut self) -> String {
         let mut out_string = String::new();
-        match (&self.buffer[..]).find("\r\n") {
+        match self.get_eol() {
             Some(i) => {
                 out_string.extend(&self.buffer[0..i]);
                 self.shift_bytes_to_start(i + 2);

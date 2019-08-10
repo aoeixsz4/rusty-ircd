@@ -1,20 +1,29 @@
 mod parser;
+mod client;
+mod buffer;
 mod irc;
-use std::io;
+use std::io::prelude::*;
+use std::net::TcpListener;
+use std::net::TcpStream;
 
 fn main () {
+    let listener = TcpListener::bind("127.0.0.1:6667").unwrap();
+    let stream = listener.incoming().nth(0).unwrap().unwrap();
     loop {
-        let mut irc_msg_buf = String::new();
+        let mut irc_msg_buf = [0; 512];
         
         // this gives us a String ending in LF, we want CR-LF
-        io::stdin().read_line(&mut irc_msg_buf)
-            .expect("Failed to read line");
+        //io::stdin().read_line(&mut irc_msg_buf)
+        //    .expect("Failed to read line");
+        stream.read(&mut irc_msg_buf).unwrap();
         
-        if &irc_msg_buf[irc_msg_buf.len()-1..] == "\n" {
-            irc_msg_buf.truncate(irc_msg_buf.len()-1);
+        let mut irc_msg_string = String::from_utf8_lossy(&irc_msg_buf[..]);
+        let () = irc_msg_string;
+        if &irc_msg_string[irc_msg_string.len()-1..] == "\n" {
+            irc_msg_string.truncate(irc_msg_string.len()-1);
         }
 
-        let irc_msg_parsed = match parser::parse_message(&irc_msg_buf) {
+        let irc_msg_parsed = match parser::parse_message(&irc_msg_string) {
             Ok(msg) => msg,
             Err(msg) => {
                 println!("Error: {:?}", msg);
