@@ -1,6 +1,10 @@
 extern crate tokio;
 extern crate futures;
 #[macro_use]
+mod irc;
+mod buffer;
+mod client;
+mod parser;
 
 use std::sync::{Mutex, Arc};
 use std::net::SocketAddr;
@@ -8,15 +12,15 @@ use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncRead, AsyncWrite};
 use futures::{Future, Async, Poll, Stream};
+use crate::buffer::MessageBuffer;
+use crate::irc::rfc_defs as rfc;
 
 struct Client {
     socket: TcpStream,
     // judging by the compiler errors, i think I will also need to wrap these fuckers in
     // Arc<Mutex<>>
-    inbuf: [u8; 512],
-    in_i: usize,
-    outbuf: [u8; 512],
-    out_i: usize,
+    input: Arc<Mutex<MessageBuffer>>,
+    output: Arc<Mutex<MessageBuffer>>,
     id: u32
 }
 
@@ -53,8 +57,22 @@ impl Future for ClientFuture {
         // try to shift everything to the start of the buffer only if a new append would
         // overrun it
         let mut write_count: usize = 0;
-        while client.out_i - write_count > 0 {
-            match client.socket.poll_write(&(client.outbuf[write_count .. client.out_i])) {
+        let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
+
+        // create a special scope where we use the Arc<Mutex<>> wrapper to copy stuff into 
+        // our temporary write buffer
+        let len = {
+            let outbuf = Arc::clone(&client.output);
+            let outbuf = outbuf.lock().unwrap();
+            if outbuf.index > 0 {
+                outbuf.copy(&mut tmp_buf) // returns bytes copied
+            } else {
+                0
+            }
+        };
+
+        while write_count < len {
+            match client.socket.poll_write(&tmp_buf[write_count .. len]) {
                 Ok(Async::Ready(bytes_out)) => write_count += bytes_out, // track how much we've written
                 Ok(Async::NotReady) => break,
                 Err(e) => {
@@ -66,45 +84,61 @@ impl Future for ClientFuture {
             }
         }
 
-        // update out_i depending on whether we wrote everything or broke out
-        // nothing happens here if we had nothing to write in the first place
-        if write_count == client.out_i {
-            client.out_i = 0; // don't need to shift anything, we can just overwrite
-        } else if write_count > 0 {
-            for (i, j) in (write_count .. client.out_i).enumerate() {
-                client.outbuf[i] = client.outbuf[j];
+        // if write_count > 0, get mutex again and shift bytes
+        // (or just reset index if write_count == index
+        if write_count > 0 {
+            let outbuf = Arc::clone(&client.output);
+            let mut outbuf = outbuf.lock().unwrap();
+            if write_count == outbuf.index {
+                outbuf.index = 0;
+            } else {
+                outbuf.shift_bytes_to_start(write_count);
             }
-            client.out_i -= write_count;
-        }
+        } // mutex dropped here
+
                     
-        while client.in_i < 512 { // loop until there's nothing to read or the buffer's full
-            match client.socket.poll_read(&mut client.inbuf[client.in_i ..]) {
+        // we'll read anything we can into a temp buffer first, then only later
+        // transfer it to the mutex guarded client.output buffer
+        let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
+        let mut tmp_index: usize = 0;
+        while tmp_index < rfc::MAX_MSG_SIZE { // loop until there's nothing to read or the buffer's full
+            match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
                 Ok(Async::Ready(bytes_read)) => {
                     println!("Client wrote us!");
-                    client.in_i += bytes_read;
+                    tmp_index += bytes_read;
                 }
-                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Ok(Async::NotReady) => break,
                 Err(e) => {
                     println!("connection error: {}", e);
                     // remove client from our map...
                     // need to aquire a mutex lock
                     let mut client_list = self.client_list.lock().unwrap();
                     // we already have a lock on our client in the outer scope
-                    client_list.map.remove(&client.id);  // oh oh. now the ID values in all clients after ours are incorrect
-                                                    // maybe there's a better way to do this, and not
-                                                    // have to update the id of every client each time?
-                                                    // e.g. a hash map
-                    return Ok(Async::Ready(())) // only call this on error - this Future completes when the client is no more
+                    client_list.map.remove(&client.id);
+                    return Ok(Async::Ready(())) // this Future completes when the client is no more
                 }
             }
         }
-        // if we end up here it's because we filled the buffer too much,
-        // maybe just for this testing code we'll use that as a condition
-        // for returning Async::Ready() and closing the connection
-        let mut client_list = self.client_list.lock().unwrap();
-        client_list.map.remove(&client.id);
-        println!("buffer overflow on client {}! dropping connection", client.id);
-        Ok(Async::Ready(()))
+
+        // buffer never seems to overflow... what's going on?
+        
+        // now we have (potentially) filled some bytes in a temp buffer
+        // get a mutex lock and update stuff
+        if tmp_index > 0 {
+            let inbuf = Arc::clone(&client.input);
+            let mut inbuf = inbuf.lock().unwrap();
+            match inbuf.append_bytes(&mut tmp_buf[.. tmp_index]) {
+                Ok(()) => Ok(Async::NotReady),
+                Err(_e) => {
+                    println!("buffer overflow! dropping connection");
+                    let mut client_list = self.client_list.lock().unwrap();
+                    client_list.map.remove(&client.id);
+                    Ok(Async::Ready(()))
+                }
+            }
+        } else {
+            Ok(Async::NotReady)
+        }
     }
 }
 
@@ -114,16 +148,15 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
     // so we can deliberately descope it before that
     let client = {
         let mut clients = clients.lock().unwrap();
+        let id = clients.next_id;
         let client = Arc::new(Mutex::new(Client {
             socket: sock,
-            outbuf: [0; 512],
-            out_i: 0,
-            inbuf: [0; 512],
-            in_i: 0,
-            id: clients.next_id
+            input: Arc::new(Mutex::new(MessageBuffer::new())),
+            output: Arc::new(Mutex::new(MessageBuffer::new())),
+            id
         }));
         // actual hashmap is inside ClientList struct
-        clients.map.insert(clients.next_id, Arc::clone(&client));
+        clients.map.insert(id, Arc::clone(&client));
 
         // increment id value, this will only ever go up, integer overflow will wreak havoc,
         // but i doubt we reach enough clients for this to happen - should
