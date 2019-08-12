@@ -1,0 +1,71 @@
+extern crate tokio;
+
+use std::sync::{Mutex, Arc};
+use std::thread;
+use tokio::prelude::*;
+use tokio::io::{copy, ReadHalf, WriteHalf};
+use tokio::net::{TcpListener, TcpStream};
+
+fn main() {
+    let addr = "127.0.0.1:6697".parse().unwrap();
+    let listener = TcpListener::bind(&addr)
+        .expect("unable to bind TCP listener");
+
+    // apparently to use this shit inside my handler i need a vector of mutexes wrapped in a mutex
+    // behind an atomic reference counter. jesus christ.
+    let socket_halves: Arc<Mutex<Vec<Mutex<TcpStream>>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // need a way to add new socks to the sockets vector,
+    // and be allowed to borrowing/ownership rules for everyone to read and write
+    // in order to deal with this properly I think we need to break up the chained method calls
+    // do things step by step
+    let server = listener.incoming() // T = tokio::net::tcp::Incoming
+        .map_err(|e| eprintln!("accept failed = {:?}", e)) // T = ...::MapErr
+        .for_each(move |sock| {
+            let sockets = Arc::clone(&socket_halves);
+
+            // we can't do the split after moving sock into a vector of Mutexes,
+            // hopefully it's possible to use the ReadHalves and WriteHalves
+            // once they're Mutex Guarded and moved into the Arc wrapped Vec<T>
+            let (reader, writer) = sock.split();
+            let () = reader;
+            let mut sock_list = sockets.lock().unwrap();
+            let my_index = sock_list.len();
+            // each one of these probably an Arc<Mutex<T>> pointer thingy to the
+            // sockets vector, which also is a vector of socket mutexes because of course it is
+            // NB: sock is moved into the vector here, later usage needs to have the Mutex
+            // and to go via the sockets vector
+            sock_list.push((Mutex::new(reader), Mutex::new(writer)));
+            // this is much more complicated than I anticipated
+            // we can't set up just a 'reader' and 'writer' here and call copy()
+            // we need a handler which, on each write, checks how many other sockets there are,
+            // queues an async write to all of them
+            
+            // so how we gonna do this handler? we need to make a future on reads from the socket
+            // then within the handler for that, we'll queue writes to the other sockets
+            //let handle_input_stream = 
+
+            // spawn future as concurrent task
+            //tokio::spawn(handle_input_stream);
+            
+            // for now lets just print something every time a socket connects, quick test
+            println!("socket connected!");
+
+            // we need to return a Future... so lets try and return one
+            // for now, we'll use the original example code from tokio docs, the echo code
+            let (reader, writer) = sock_list[my_index].lock().unwrap();
+            let copy_future = copy(reader, writer);
+            let handle_conn = copy_future.map(|nr_bytes| {
+                println!("nr bytes: {:?}", nr_bytes)
+            }).map_err(|err| {
+                eprintln!("IO error {:?}", err)
+            });
+
+            // spawn and return a tokio::executor::Spawn
+            tokio::spawn(handle_conn)
+        });
+
+    // Start the Tokio runtime
+    tokio::run(server);
+}
+
