@@ -1,3 +1,6 @@
+NEW FIRST THING TO DO:
+ ° write an async io program that binds to a port and accepts connections
+
 so far:
  ° the parsing engine is fairly complete
  ° bits and pieces of runtime data structuring have been mapped out, i.e.
