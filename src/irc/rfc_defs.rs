@@ -3,6 +3,7 @@
 // and other strings are composed of valid characters
 use std::env;
 
+pub const MAX_MSG_SIZE: usize = 512;
 pub const MAX_MSG_PARAMS: usize = 15; // including tailing, but not including COMMAND
 pub const LETTER: &'static str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 pub const UPPER: &'static str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
