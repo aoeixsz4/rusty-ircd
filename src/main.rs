@@ -103,6 +103,15 @@ impl Future for ClientFuture {
         let mut tmp_index: usize = 0;
         while tmp_index < rfc::MAX_MSG_SIZE { // loop until there's nothing to read or the buffer's full
             match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
+                Ok(Async::Ready(bytes_read)) if bytes_read == 0 => {
+                    println!("eof");
+                    // remove client from our map...
+                    // need to aquire a mutex lock
+                    let mut client_list = self.client_list.lock().unwrap();
+                    // we already have a lock on our client in the outer scope
+                    client_list.map.remove(&client.id);
+                    return Ok(Async::Ready(())); // this Future completes when the client is no more
+                }
                 Ok(Async::Ready(bytes_read)) => {
                     println!("Client wrote us!");
                     tmp_index += bytes_read;
@@ -115,7 +124,7 @@ impl Future for ClientFuture {
                     let mut client_list = self.client_list.lock().unwrap();
                     // we already have a lock on our client in the outer scope
                     client_list.map.remove(&client.id);
-                    return Ok(Async::Ready(())) // this Future completes when the client is no more
+                    return Ok(Async::Ready(())); // this Future completes when the client is no more
                 }
             }
         }
@@ -128,17 +137,55 @@ impl Future for ClientFuture {
             let inbuf = Arc::clone(&client.input);
             let mut inbuf = inbuf.lock().unwrap();
             match inbuf.append_bytes(&mut tmp_buf[.. tmp_index]) {
-                Ok(()) => Ok(Async::NotReady),
+                Ok(()) => (), // do nothing
                 Err(_e) => {
                     println!("buffer overflow! dropping connection");
                     let mut client_list = self.client_list.lock().unwrap();
                     client_list.map.remove(&client.id);
-                    Ok(Async::Ready(()))
+                    return Ok(Async::Ready(()));
                 }
             }
-        } else {
-            Ok(Async::NotReady)
         }
+
+        // ok - we can read, and also have untested write code above,
+        // but nothing to write, so here we check the client input buffer,
+        // for a cr-lf delimiter, and append to other client output buffers
+        {
+            let inbuf = Arc::clone(&client.input);
+            let mut inbuf = inbuf.lock().unwrap();
+            let client_list = self.client_list.lock().unwrap();
+            while inbuf.has_delim() {
+                println!("got delim!");
+                let mut msg_string = inbuf.extract_ln();
+                msg_string.push_str("\r\n");
+                for (id, other_client) in &client_list.map {
+                    if *id == client.id {
+                        continue;
+                    }
+                    let mut other_client = other_client.lock().unwrap();
+                    let mut outbuf = other_client.output.lock().unwrap();
+
+
+                    // this is a bit tricky,
+                    // currently doing it like this only writes next time the other client
+                    // is poll()ed, which seems to happen only when the other client writes
+                    // something. we need some way to register an event on the socket/future,
+                    // so it knows we want to do something
+                    // or, just do all our poll_writes down here
+                    // need to read up more on the events driving the polling of futures
+                    match outbuf.append_str(&msg_string) {
+                        Ok(()) => (), // do nothing
+                        Err(_e) => {
+                            println!("buffer overflow! dropping connection");
+                            let mut client_list = self.client_list.lock().unwrap();
+                            client_list.map.remove(&client.id);
+                            return Ok(Async::Ready(()));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Async::NotReady)
     }
 }
 

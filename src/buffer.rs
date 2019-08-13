@@ -37,13 +37,23 @@ impl MessageBuffer {
         self.shift_bytes(src_i, 0, self.index - src_i);
     }
     
-    fn get_eol (&mut self) -> Option<usize> {
+    fn get_eol (&self) -> Option<usize> {
+        if self.index < 2 {
+            return None;
+        }
         for i in 0..self.index - 1 {
             if self.buffer[i] == ('\r' as u8) && self.buffer[i + 1] == ('\n' as u8) {
                 return Some(i);
             }
         }
         None
+    }
+
+    pub fn has_delim (&self) -> bool {
+        match self.get_eol() {
+            Some(_) => true,
+            None => false
+        }
     }
 
     // we only need this for input buffers, so
