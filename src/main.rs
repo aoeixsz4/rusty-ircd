@@ -30,6 +30,8 @@ struct Client {
 struct ClientFuture {
     client: Arc<Mutex<Client>>,
     client_list: Arc<Mutex<ClientList>>,
+    id: u32, // same as client id
+    first_poll: bool
 }
 
 struct ClientList {
@@ -46,6 +48,13 @@ impl Future for ClientFuture {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let client = Arc::clone(&self.client);
         let mut client = client.lock().unwrap();  // client is now under mutex lock
+
+        // if its the first time polling, we need to register our task
+        if self.first_poll == true {
+            self.first_poll = false;
+            client.handler = task::current();
+        }
+
         // try to write if there is anything in outbuf,
         // bad idea to loop here, unless perhaps we have a break statement on Async::NotReady?
         // yeah, that should be fairly safe, then we at least try to empty the buffer until we
@@ -186,8 +195,9 @@ impl Future for ClientFuture {
                         }
                     }
                     
-                    // need to notify
+                    // need to notify ... this appears to do nothing
                     other_client.handler.notify();
+                    println!("tried to notify...");
                 }
             }
         }
@@ -199,14 +209,16 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
     // borrow checker complains about mutex locked clients
     // borrowing stuff when a move happens
     // so we can deliberately descope it before that
+    // scope id here to use later
+    let mut id = 0;
     let client = {
         let mut clients = clients.lock().unwrap();
-        let id = clients.next_id;
+        id = clients.next_id;
         let client = Arc::new(Mutex::new(Client {
             socket: sock,
             input: Arc::new(Mutex::new(MessageBuffer::new())),
             output: Arc::new(Mutex::new(MessageBuffer::new())),
-            handler: task::current(),
+            handler: task::current(), // this is a placeholder for now - the first call to poll() needs to set the real value
             id
         }));
         // actual hashmap is inside ClientList struct
@@ -224,7 +236,9 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
     // and we don't have any reference cycles
     ClientFuture {
         client: Arc::clone(&client),
-        client_list: clients
+        client_list: clients,
+        id,
+        first_poll: true
     }
 }
         
