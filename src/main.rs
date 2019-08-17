@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncRead, AsyncWrite};
 use futures::{Future, Async, Poll, Stream};
+use futures::task;
+use futures::task::Task;
 use crate::buffer::MessageBuffer;
 use crate::irc::rfc_defs as rfc;
 
@@ -21,6 +23,7 @@ struct Client {
     // Arc<Mutex<>>
     input: Arc<Mutex<MessageBuffer>>,
     output: Arc<Mutex<MessageBuffer>>,
+    handler: Task,
     id: u32
 }
 
@@ -182,6 +185,9 @@ impl Future for ClientFuture {
                             return Ok(Async::Ready(()));
                         }
                     }
+                    
+                    // need to notify
+                    other_client.handler.notify();
                 }
             }
         }
@@ -200,6 +206,7 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
             socket: sock,
             input: Arc::new(Mutex::new(MessageBuffer::new())),
             output: Arc::new(Mutex::new(MessageBuffer::new())),
+            handler: task::current(),
             id
         }));
         // actual hashmap is inside ClientList struct
