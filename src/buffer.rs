@@ -105,7 +105,6 @@ impl MessageBuffer {
     }
 
     pub fn append_bytes(&mut self, buf: &[u8]) -> Result<(), BufferError> {
-        println!("DEBUG: append_bytes called, current index: {}", self.index);
         if buf.len() > (rfc::MAX_MSG_SIZE - self.index) {
             return Err(BufferError::OverFlow);
         }
