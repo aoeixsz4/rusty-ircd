@@ -30,18 +30,20 @@ struct ClientFuture {
     client: Arc<Mutex<Client>>,
     client_list: Arc<Mutex<ClientList>>,
     id: u32, // same as client id
-    first_poll: bool
+    first_poll: bool,
 }
 
 pub struct Client { // is it weird/wrong to have an object with the same name as the module?
     // will need a hash table for joined channels
     //channels: type unknown
-    //socket: SocketType,
+    socket: TcpStream,
     //flags: some sort of enum vector?
-    host: irc::Host,
+    //host: irc::Host,
+    id: u32,
     input: MessageBuffer,
     output: MessageBuffer,
-    handler: task::Task,
+    handler: Task,
+    dead: bool // this will be flagged if poll() needs to remove the client
 }
 
 impl Future for ClientFuture {
@@ -56,7 +58,7 @@ impl Future for ClientFuture {
     }
     
     // to be called from polling future
-    fn try_flush(&mut self, &mut client: Client) -> Poll<Self::Item, Self::Error>  {
+    fn try_flush(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error>  {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
@@ -90,7 +92,7 @@ impl Future for ClientFuture {
         return Ok(Async::NotReady);
     }
 
-    fn try_read(&mut self, &mut client: Client) -> Poll<Self::Item, Self::Error> {
+    fn try_read(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error> {
         // we'll read anything we can into a temp buffer first, then only later
         // transfer it to the mutex guarded client.output buffer
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
@@ -114,11 +116,33 @@ impl Future for ClientFuture {
         }
     }
 
+    // forward incoming message to other users
+    fn broadcast(&mut self, map: &mut HashMap, msg: &str) {
+        for (id, other_client) in &client_list.map {
+            // skip writing to ourself
+            if *id == self.id {
+                continue;
+            }
+            
+            // get a mutex on the other client
+            let mut other_client = other_client.lock().unwrap();
+
+            // send_line() takes care of notifying the Future and flags
+            // the client as dead if the append fails (indicates full buffer
+            // (indicates flushes are not successful))
+            other_client.send_line(&msg);
+        }
+    }
 
     // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let client = Arc::clone(&self.client);
         let mut client = client.lock().unwrap();  // client is now under mutex lock
+
+        // is connection/client dead? drop from list and return Ready to complete our future
+        if client.dead == true {
+            return self.drop(&mut client);
+        }
 
         // if its the first time polling, we need to register our task
         if self.first_poll == true {
@@ -129,50 +153,21 @@ impl Future for ClientFuture {
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
 	if let Err(_e) = self.try_flush(&mut client) {
-            return drop(self, &mut client);
+            return self.drop(&mut client);
         }
 
         // try to read into our client's in-buffer
         match self.try_read(&mut client) {
             Ok(Async::NotReady) => (), // do nothing
-            Ok(Async::Ready(_)) => return drop(self, &mut client), // EOF
-            Err(_e) => return drop(self, &mut client) // Connection error
+            Ok(Async::Ready(_)) => return self.drop(&mut client), // EOF
+            Err(_e) => return self.drop(&mut client) // Connection error
         }
                     
         // loop while client's input buffer contains line delimiters
         let client_list = self.client_list.lock().unwrap();
-        while inbuf.has_delim() {
-            let mut msg_string = inbuf.extract_ln();
-            msg_string.push_str("\r\n");
-
-            for (id, other_client) in &client_list.map {
-                if *id == client.id {
-                    continue;
-                }
-                let mut other_client = other_client.lock().unwrap();
-                let mut outbuf = other_client.output.lock().unwrap();
-
-
-                // this is a bit tricky,
-                // currently doing it like this only writes next time the other client
-                // is poll()ed, which seems to happen only when the other client writes
-                // something. we need some way to register an event on the socket/future,
-                // so it knows we want to do something
-                // or, just do all our poll_writes down here
-                // need to read up more on the events driving the polling of futures
-                match outbuf.append_str(&msg_string) {
-                    Ok(()) => (), // do nothing
-                    Err(_e) => {
-                        println!("buffer overflow! dropping connection");
-                        let mut client_list = self.client_list.lock().unwrap();
-                        client_list.map.remove(&client.id);
-                        return Ok(Async::Ready(()));
-                    }
-                }
-                
-                // need to notify ... this appears to do nothing
-                other_client.handler.notify();
-            }
+        while client.input.has_delim() {
+            let msg_string = inbuf.extract_ln();
+            self.broadcast(&client_list, msg_string);
         }
         Ok(Async::NotReady)
     }
@@ -190,13 +185,14 @@ impl Client {
     // we'll need a socket type as a parameter
     // implementation decision: explicitly return as a pointer to heap data
     // will also be necessary that all threads can access every client object
-    pub fn new(host: irc::Host) -> Client {
+    pub fn new(id: u32, task: Task, socket: TcpStream) -> Client {
         Client {
-            host,
-            outbuf: buffer::MessageBuffer::new(),
-            inbuf: buffer::MessageBuffer::new(),
-            handler: None, // set this later
-            //socket,
+            output: buffer::MessageBuffer::new(),
+            input: buffer::MessageBuffer::new(),
+            handler: task, // placeholder
+            dead: false,
+            socket,
+            id
         }
     }
 
@@ -222,11 +218,13 @@ impl Client {
     // so just an undelimited line should be passed as a &str
     // the function also notifies the runtime that the socket handler needs
     // to be polled to flush the write
-    pub fn send_line(&mut self, buf: &str) -> Result<(), buffer::BufferError> {
+    pub fn send_line(&mut self, buf: &str) {
         let mut outbuf = self.output.lock().unwrap();
         let mut string = String::from_utf8_lossy(&buf).to_string();
         string.push_str("\r\n");
-        output.append_str(string)?;
         self.handler.notify();
+        if let Err(_e) = output.append_str(string) {
+            self.dead = true;
+        }
     }
 }
