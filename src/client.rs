@@ -36,8 +36,15 @@ struct ClientFuture {
 impl Future for ClientFuture {
     type Item = ();
     type Error = ();
+
+    // call when client connection drops (either in error or if eof is received)
+    fn drop(&mut self) -> Result<Self::Item, Self::Error> {
+        let mut client_list = self.client_list.lock().unwrap();
+        client_list.map.remove(&client.id);
+        return Ok(Async::Ready(()));
+    }
     
-        // to be called from polling future
+    // to be called from polling future
     fn try_flush(&mut self) -> Result<Self::Item, Self::Error>  {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
@@ -48,43 +55,32 @@ impl Future for ClientFuture {
 
         // create a special scope where we use the Arc<Mutex<>> wrapper to copy stuff into 
         // our temporary write buffer
-        let len = {
-            let outbuf = self.outbuf.lock().unwrap();
-            if outbuf.index > 0 {
-                outbuf.copy(&mut tmp_buf) // returns bytes copied
-            } else {
-                0
-            }
-        };
+        let len = client.output.copy(&mut tmp_buf); // returns bytes copied
 
-		// write as much as we can while just incrementing indices
+        // write as much as we can while just incrementing indices
         while write_count < len {
             match client.socket.poll_write(&tmp_buf[write_count .. len]) {
                 Ok(Async::Ready(bytes_out)) => write_count += bytes_out, // track how much we've written
                 Ok(Async::NotReady) => break,
-                Err(e) => {
-                    println!("connection error: {}", e);
-                    let mut client_list = self.client_list.lock().unwrap();
-                    client_list.map.remove(&client.id);
-                    return Ok(Async::Ready(()));
-                }
+                Err(e) => return Err(e)
             }
         }
 
         // if write_count > 0, get mutex again and shift bytes
         // (or just reset index if write_count == index
         if write_count > 0 {
-            let outbuf = Arc::clone(&client.output);
-            let mut outbuf = outbuf.lock().unwrap();
-            if write_count == outbuf.index {
-                outbuf.index = 0;
+            if write_count == client.output.index {
+                client.output.index = 0;
             } else {
-                outbuf.shift_bytes_to_start(write_count);
+                client.output.shift_bytes_to_start(write_count);
             }
         }
+
+        // only return Ready when it's time to drop the client
+        return Ok(Async::NotReady);
     }
 
-	// this here is the main thing
+    // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let client = Arc::clone(&self.client);
         let mut client = client.lock().unwrap();  // client is now under mutex lock
@@ -96,9 +92,10 @@ impl Future for ClientFuture {
         }
 
         // try to write if there is anything in outbuf,
-        // bad idea to loop here, unless perhaps we have a break statement on Async::NotReady?
-		match self.try_flush() {
-		}
+        // returns error if there is a connection problem, in which case drop the client
+	if let Err(_e) = self.try_flush() {
+            return drop(self, client);
+        }
                     
         // we'll read anything we can into a temp buffer first, then only later
         // transfer it to the mutex guarded client.output buffer
