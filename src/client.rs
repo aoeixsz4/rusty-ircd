@@ -33,23 +33,33 @@ struct ClientFuture {
     first_poll: bool
 }
 
+pub struct Client { // is it weird/wrong to have an object with the same name as the module?
+    // will need a hash table for joined channels
+    //channels: type unknown
+    //socket: SocketType,
+    //flags: some sort of enum vector?
+    host: irc::Host,
+    input: MessageBuffer,
+    output: MessageBuffer,
+    handler: task::Task,
+}
+
 impl Future for ClientFuture {
     type Item = ();
     type Error = ();
 
     // call when client connection drops (either in error or if eof is received)
-    fn drop(&mut self) -> Result<Self::Item, Self::Error> {
+    fn drop(&mut self) -> Poll<Self::Item, Self::Error> {
         let mut client_list = self.client_list.lock().unwrap();
         client_list.map.remove(&client.id);
         return Ok(Async::Ready(()));
     }
     
     // to be called from polling future
-    fn try_flush(&mut self) -> Result<Self::Item, Self::Error>  {
+    fn try_flush(&mut self, &mut client: Client) -> Poll<Self::Item, Self::Error>  {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
-        let mut client = self.client.lock().unwrap();
         let mut write_count: usize = 0;
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
 
@@ -80,6 +90,31 @@ impl Future for ClientFuture {
         return Ok(Async::NotReady);
     }
 
+    fn try_read(&mut self, &mut client: Client) -> Poll<Self::Item, Self::Error> {
+        // we'll read anything we can into a temp buffer first, then only later
+        // transfer it to the mutex guarded client.output buffer
+        let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
+        let mut tmp_index: usize = 0;
+        while tmp_index < rfc::MAX_MSG_SIZE { // loop until there's nothing to read or the buffer's full
+            match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
+                Ok(Async::Ready(bytes_read)) if bytes_read == 0 =>
+                    // EOF - this Future completes when the client is no more
+                    return Ok(Async::Ready(())),
+                Ok(Async::Ready(bytes_read)) => tmp_index += bytes_read,
+                Ok(Async::NotReady) => return Async::NotReady,
+                Err(e) => return Err(e)
+            }
+        }
+
+        // now we have (potentially) filled some bytes in a temp buffer
+        // get a mutex lock and update stuff
+        if tmp_index > 0 {
+            // if the below call returns an error, the client will be dropped
+            client.input.append_bytes(&mut tmp_buf[.. tmp_index])?;
+        }
+    }
+
+
     // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let client = Arc::clone(&self.client);
@@ -93,114 +128,54 @@ impl Future for ClientFuture {
 
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
-	if let Err(_e) = self.try_flush() {
-            return drop(self, client);
+	if let Err(_e) = self.try_flush(&mut client) {
+            return drop(self, &mut client);
+        }
+
+        // try to read into our client's in-buffer
+        match self.try_read(&mut client) {
+            Ok(Async::NotReady) => (), // do nothing
+            Ok(Async::Ready(_)) => return drop(self, &mut client), // EOF
+            Err(_e) => return drop(self, &mut client) // Connection error
         }
                     
-        // we'll read anything we can into a temp buffer first, then only later
-        // transfer it to the mutex guarded client.output buffer
-        let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
-        let mut tmp_index: usize = 0;
-        while tmp_index < rfc::MAX_MSG_SIZE { // loop until there's nothing to read or the buffer's full
-            match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
-                Ok(Async::Ready(bytes_read)) if bytes_read == 0 => {
-                    println!("eof");
-                    // remove client from our map...
-                    // need to aquire a mutex lock
-                    let mut client_list = self.client_list.lock().unwrap();
-                    // we already have a lock on our client in the outer scope
-                    client_list.map.remove(&client.id);
-                    return Ok(Async::Ready(())); // this Future completes when the client is no more
-                }
-                Ok(Async::Ready(bytes_read)) => {
-                    println!("Client wrote us!");
-                    tmp_index += bytes_read;
-                }
-                Ok(Async::NotReady) => break,
-                Err(e) => {
-                    println!("connection error: {}", e);
-                    // remove client from our map...
-                    // need to aquire a mutex lock
-                    let mut client_list = self.client_list.lock().unwrap();
-                    // we already have a lock on our client in the outer scope
-                    client_list.map.remove(&client.id);
-                    return Ok(Async::Ready(())); // this Future completes when the client is no more
-                }
-            }
-        }
+        // loop while client's input buffer contains line delimiters
+        let client_list = self.client_list.lock().unwrap();
+        while inbuf.has_delim() {
+            let mut msg_string = inbuf.extract_ln();
+            msg_string.push_str("\r\n");
 
-        // buffer never seems to overflow... what's going on?
-        
-        // now we have (potentially) filled some bytes in a temp buffer
-        // get a mutex lock and update stuff
-        if tmp_index > 0 {
-            let inbuf = Arc::clone(&client.input);
-            let mut inbuf = inbuf.lock().unwrap();
-            match inbuf.append_bytes(&mut tmp_buf[.. tmp_index]) {
-                Ok(()) => (), // do nothing
-                Err(_e) => {
-                    println!("buffer overflow! dropping connection");
-                    let mut client_list = self.client_list.lock().unwrap();
-                    client_list.map.remove(&client.id);
-                    return Ok(Async::Ready(()));
+            for (id, other_client) in &client_list.map {
+                if *id == client.id {
+                    continue;
                 }
-            }
-        }
+                let mut other_client = other_client.lock().unwrap();
+                let mut outbuf = other_client.output.lock().unwrap();
 
-        // ok - we can read, and also have untested write code above,
-        // but nothing to write, so here we check the client input buffer,
-        // for a cr-lf delimiter, and append to other client output buffers
-        {
-            let inbuf = Arc::clone(&client.input);
-            let mut inbuf = inbuf.lock().unwrap();
-            let client_list = self.client_list.lock().unwrap();
-            while inbuf.has_delim() {
-                println!("got delim!");
-                let mut msg_string = inbuf.extract_ln();
-                msg_string.push_str("\r\n");
-                for (id, other_client) in &client_list.map {
-                    if *id == client.id {
-                        continue;
+
+                // this is a bit tricky,
+                // currently doing it like this only writes next time the other client
+                // is poll()ed, which seems to happen only when the other client writes
+                // something. we need some way to register an event on the socket/future,
+                // so it knows we want to do something
+                // or, just do all our poll_writes down here
+                // need to read up more on the events driving the polling of futures
+                match outbuf.append_str(&msg_string) {
+                    Ok(()) => (), // do nothing
+                    Err(_e) => {
+                        println!("buffer overflow! dropping connection");
+                        let mut client_list = self.client_list.lock().unwrap();
+                        client_list.map.remove(&client.id);
+                        return Ok(Async::Ready(()));
                     }
-                    let mut other_client = other_client.lock().unwrap();
-                    let mut outbuf = other_client.output.lock().unwrap();
-
-
-                    // this is a bit tricky,
-                    // currently doing it like this only writes next time the other client
-                    // is poll()ed, which seems to happen only when the other client writes
-                    // something. we need some way to register an event on the socket/future,
-                    // so it knows we want to do something
-                    // or, just do all our poll_writes down here
-                    // need to read up more on the events driving the polling of futures
-                    match outbuf.append_str(&msg_string) {
-                        Ok(()) => (), // do nothing
-                        Err(_e) => {
-                            println!("buffer overflow! dropping connection");
-                            let mut client_list = self.client_list.lock().unwrap();
-                            client_list.map.remove(&client.id);
-                            return Ok(Async::Ready(()));
-                        }
-                    }
-                    
-                    // need to notify ... this appears to do nothing
-                    other_client.handler.notify();
                 }
+                
+                // need to notify ... this appears to do nothing
+                other_client.handler.notify();
             }
         }
         Ok(Async::NotReady)
     }
-}
-
-pub struct Client { // is it weird/wrong to have an object with the same name as the module?
-    // will need a hash table for joined channels
-    //channels: type unknown
-    //socket: SocketType,
-    //flags: some sort of enum vector?
-    host: irc::Host,
-    inbuf: Arc<Mutex<MessageBuffer>>,
-    outbuf: Arc<Mutex<MessageBuffer>>,
-    handler: task::Task,
 }
 
 // externally, clients will probably be collected in a vector/hashmap somewhere
