@@ -122,7 +122,7 @@ impl Future for ClientFuture {
     }
 
     // forward incoming message to other users
-    fn broadcast(&mut self, map: &mut HashMap, msg: &str) {
+    fn broadcast(&mut self, map: &mut HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
         for (id, other_client) in &client_list.map {
             // skip writing to ourself
             if *id == self.id {

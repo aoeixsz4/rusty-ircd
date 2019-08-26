@@ -25,7 +25,7 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
     let client = {
         let mut clients = clients.lock().unwrap();
         id = clients.next_id;
-        let client = Arc::new(Mutex::new(Client::new(id, task::current, sock);
+        let client = Arc::new(Mutex::new(Client::new(id, task::current, sock)));
         // actual hashmap is inside ClientList struct
         clients.map.insert(id, Arc::clone(&client));
 
