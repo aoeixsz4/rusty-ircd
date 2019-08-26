@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use crate::buffer::MessageBuffer;
 use crate::client::{Client, ClientFuture, ClientList};
-use futures::{task,stream};
+use futures::{task, Stream};
 
 // will want to at some point merge this with existing client and messagebuffer code in client.rs
 // and buffer.rs
