@@ -46,6 +46,11 @@ pub struct Client { // is it weird/wrong to have an object with the same name as
     dead: bool // this will be flagged if poll() needs to remove the client
 }
 
+struct ClientList {
+    map: HashMap<u32, Arc<Mutex<Client>>>,
+    next_id: u32
+}
+
 impl Future for ClientFuture {
     type Item = ();
     type Error = ();
