@@ -10,7 +10,7 @@ use crate::parser;
 
 use std::sync::{Mutex, Arc};
 use std::net::SocketAddr;
-use std::error::Error;
+use std::io::{Error, ErrorKind};
 use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -55,18 +55,18 @@ pub struct ClientList {
 impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
     // remove client from list on EOF or connection error
-    fn unlink_client(&mut self, client: &Client)
-        -> Poll<<self::ClientFuture as Future>::Item, Box<dyn Error> {
+    fn unlink_client(&mut self, client: &Client) {
         let mut client_list = self.client_list.lock().unwrap();
-        // what do we do if client doesnt exist in map? this will likely panic,
-        // under current implementation
-        client_list.map.remove(&client.id)?;
-        Ok(Async::Ready(()))
+        // HashMap::remove() returns an Option<T>, so we can either
+        // ignore the possibility that the client is alread unlinked, or deliberately panic
+        // (since if this fails, there may well be a bug elsewhere
+        if let None = client_list.map.remove(&client.id) {
+            panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
+        }
     }
     
     // to be called from polling future
-    fn try_flush(&mut self, client: &mut Client)
-        -> Poll<<self::ClientFuture as Future>::Item, Box<dyn Error>> {
+    fn try_flush(&mut self, client: &mut Client) -> Result<usize, Error> {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
@@ -82,7 +82,7 @@ impl ClientFuture {
             match client.socket.poll_write(&tmp_buf[write_count .. len]) {
                 Ok(Async::Ready(bytes_out)) => write_count += bytes_out, // track how much we've written
                 Ok(Async::NotReady) => break,
-                Err(e) => return Err(Box::new(e))
+                Err(e) => return Err(e)
             }
         }
 
@@ -97,11 +97,10 @@ impl ClientFuture {
         }
 
         // only return Ready when it's time to drop the client
-        Ok(Async::NotReady)
+        Ok(write_count)
     }
 
-    fn try_read(&mut self, client: &mut Client)
-        -> Poll<<self::ClientFuture as Future>::Item, Box<dyn Error>> {
+    fn try_read(&mut self, client: &mut Client) -> Result<usize, Error> {
         // we'll read anything we can into a temp buffer first, then only later
         // transfer it to the mutex guarded client.output buffer
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
@@ -113,10 +112,10 @@ impl ClientFuture {
                     // WARNING - possible edge case:
                     // client writes a valid message followed directly by EOF,
                     // we end up ignoring their message in the buffer
-                    return Ok(Async::Ready(())),
+                    return Err(Error::new(ErrorKind::UnexpectedEof, "received EOF")),
                 Ok(Async::Ready(bytes_read)) => tmp_index += bytes_read,
                 Ok(Async::NotReady) => break, // can't read no more
-                Err(e) => return Err(Box::new(e))
+                Err(e) => return Err(e)
             }
         }
 
@@ -127,7 +126,7 @@ impl ClientFuture {
             client.input.append_bytes(&mut tmp_buf[.. tmp_index])?;
         }
 
-        Ok(Async::NotReady)
+        Ok(tmp_index)
     }
 
     // forward incoming message to other users
@@ -159,7 +158,8 @@ impl Future for ClientFuture {
 
         // is connection/client dead? drop from list and return Ready to complete our future
         if client.dead == true {
-            return self.unlink_client(&client);
+            self.unlink_client(&client);
+            return Ok(Async::Ready(()));
         }
 
         // if its the first time polling, we need to register our task
@@ -170,15 +170,15 @@ impl Future for ClientFuture {
 
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
-	if let Err(_e) = self.try_flush(&client) {
-            return self.unlink_client(&client);
+	if let Err(_e) = self.try_flush(&mut client) {
+            self.unlink_client(&client);
+            return Ok(Async::Ready(()));
         }
 
         // try to read into our client's in-buffer
-        match self.try_read(&mut client) {
-            Ok(Async::NotReady) => (), // do nothing
-            Ok(Async::Ready(_)) => return self.unlink_client(&client), // EOF
-            Err(_e) => return self.unlink_client(&client) // Connection error
+        if let Err(_e) = self.try_read(&mut client) {
+            self.unlink_client(&client);
+            return Ok(Async::Ready(()));
         }
 
         // loop while client's input buffer contains line delimiters
