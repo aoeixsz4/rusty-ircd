@@ -55,7 +55,7 @@ pub struct ClientList {
 impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
     fn drop(&mut self, client: &mut Client)
-        -> Poll<<client::ClientFuture as Trait>::Item, <client::ClientFuture as Trait>::Error> {
+        -> Poll<<self::ClientFuture as Future>::Item, Box<dyn Error> {
         let mut client_list = self.client_list.lock().unwrap();
         // what do we do if client doesnt exist in map?
         client_list.map.remove(&client.id)?;
@@ -64,7 +64,7 @@ impl ClientFuture {
     
     // to be called from polling future
     fn try_flush(&mut self, client: &mut Client)
-        -> Poll<<client::ClientFuture as Trait>::Item, <client::ClientFuture as Trait>::Error> {
+        -> Poll<<self::ClientFuture as Future>::Item, Box<dyn Error>> {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
@@ -99,7 +99,7 @@ impl ClientFuture {
     }
 
     fn try_read(&mut self, client: &mut Client)
-        -> Poll<<client::ClientFuture as Trait>::Item, <client::ClientFuture as Trait>::Error> {
+        -> Poll<<self::ClientFuture as Future>::Item, Box<dyn Error>> {
         // we'll read anything we can into a temp buffer first, then only later
         // transfer it to the mutex guarded client.output buffer
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
@@ -121,6 +121,8 @@ impl ClientFuture {
             // if the below call returns an error, the client will be dropped
             client.input.append_bytes(&mut tmp_buf[.. tmp_index])?;
         }
+
+        Ok(Async::NotReady)
     }
 
     // forward incoming message to other users
@@ -178,7 +180,7 @@ impl Future for ClientFuture {
         let client_list = self.client_list.lock().unwrap();
         while client.input.has_delim() {
             let msg_string = client.input.extract_ln();
-            self.broadcast(&client_list, &msg_string);
+            self.broadcast(&client_list.map, &msg_string);
         }
         Ok(Async::NotReady)
     }
@@ -233,7 +235,7 @@ impl Client {
         let mut string = buf.to_string();
         string.push_str("\r\n");
         self.handler.notify();
-        if let Err(_e) = self.output.append_str(string) {
+        if let Err(_e) = self.output.append_str(&string) {
             self.dead = true;
         }
     }
