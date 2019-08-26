@@ -11,29 +11,7 @@ use std::net::SocketAddr;
 use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use crate::buffer::MessageBuffer;
-use crate::irc::rfc_defs as rfc;
-
-struct Client {
-    socket: TcpStream,
-    // judging by the compiler errors, i think I will also need to wrap these fuckers in
-    // Arc<Mutex<>>
-    input: MessageBuffer,
-    output: MessageBuffer,
-    handler: Task,
-    id: u32
-}
-
-struct ClientFuture {
-    client: Arc<Mutex<Client>>,
-    client_list: Arc<Mutex<ClientList>>,
-    id: u32, // same as client id
-    first_poll: bool
-}
-
-struct ClientList {
-    map: HashMap<u32, Arc<Mutex<Client>>>,
-    next_id: u32
-}
+use crate::client::{Client, ClientFuture, ClientList};
 
 // will want to at some point merge this with existing client and messagebuffer code in client.rs
 // and buffer.rs
@@ -47,14 +25,7 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
     let client = {
         let mut clients = clients.lock().unwrap();
         id = clients.next_id;
-        let client = Arc::new(Mutex::new(Client {
-            socket: sock,
-            input: MessageBuffer::new(),
-            output: MessageBuffer::new(),
-            // placeholder, first poll() call to parent ClientFuture sets the real handler
-            handler: task::current(),
-            id
-        }));
+        let client = Arc::new(Mutex::new(Client::new(id, task::current, sock);
         // actual hashmap is inside ClientList struct
         clients.map.insert(id, Arc::clone(&client));
 
