@@ -48,13 +48,14 @@ pub struct Client { // is it weird/wrong to have an object with the same name as
 }
 
 pub struct ClientList {
-    map: HashMap<u32, Arc<Mutex<Client>>>,
-    next_id: u32
+    pub map: HashMap<u32, Arc<Mutex<Client>>>,
+    pub next_id: u32
 }
 
 impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
-    fn drop(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error> {
+    fn drop(&mut self, client: &mut Client)
+        -> Poll<<client::ClientFuture as Trait>::Item, <client::ClientFuture as Trait>::Error> {
         let mut client_list = self.client_list.lock().unwrap();
         // what do we do if client doesnt exist in map?
         client_list.map.remove(&client.id)?;
@@ -62,7 +63,8 @@ impl ClientFuture {
     }
     
     // to be called from polling future
-    fn try_flush(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error> {
+    fn try_flush(&mut self, client: &mut Client)
+        -> Poll<<client::ClientFuture as Trait>::Item, <client::ClientFuture as Trait>::Error> {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
@@ -96,7 +98,8 @@ impl ClientFuture {
         Ok(Async::NotReady)
     }
 
-    fn try_read(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error> {
+    fn try_read(&mut self, client: &mut Client)
+        -> Poll<<client::ClientFuture as Trait>::Item, <client::ClientFuture as Trait>::Error> {
         // we'll read anything we can into a temp buffer first, then only later
         // transfer it to the mutex guarded client.output buffer
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
@@ -121,8 +124,8 @@ impl ClientFuture {
     }
 
     // forward incoming message to other users
-    fn broadcast(&mut self, map: &mut HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
-        for (id, other_client) in &map {
+    fn broadcast(&mut self, map: &HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
+        for (id, other_client) in map {
             // skip writing to ourself
             if *id == self.id {
                 continue;
@@ -175,7 +178,7 @@ impl Future for ClientFuture {
         let client_list = self.client_list.lock().unwrap();
         while client.input.has_delim() {
             let msg_string = client.input.extract_ln();
-            self.broadcast(&client_list, msg_string);
+            self.broadcast(&client_list, &msg_string);
         }
         Ok(Async::NotReady)
     }
@@ -212,7 +215,7 @@ impl Client {
         // first bit of code locates a CR-LF
         // next bit extracts a string and moves buffer data after CR-LF
         // to front, reseting the index afterwards
-        let command_string = self.inbuf.extract_ln();
+        let command_string = self.input.extract_ln();
 
         // i will insist that the event handler doesn't hand us empty lines
         assert!(command_string.len() != 0);
@@ -227,7 +230,7 @@ impl Client {
     // the function also notifies the runtime that the socket handler needs
     // to be polled to flush the write
     pub fn send_line(&mut self, buf: &str) {
-        let mut string = String::from_utf8_lossy(&buf).to_string();
+        let mut string = buf.to_string();
         string.push_str("\r\n");
         self.handler.notify();
         if let Err(_e) = self.output.append_str(string) {
