@@ -5,27 +5,18 @@ use std::error::Error;
 use std::fmt;
 use crate::irc::rfc_defs as rfc;
 
-pub enum BufferErrorType {
-    OverflowIn,
-    OverflowOut
-}
-
 #[derive(Debug)]
-pub struct BufferError {
-    err_type: BufferErrorType
+pub enum BufferError {
+    Overflow,
 }
 
-impl fmt::Display for BufferOverflow {
+impl fmt::Display for BufferError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let src = match self.err_type {
-            BufferErrorType::OverflowIn => "input",
-            BufferErrorType::OverflowOut => "output"
-        };
-        write!(f, "Buffer overflow in client {} buffer", src);
+        write!(f, "Buffer overflow in client output buffer")
     }
 }
 
-impl Error for BufferOverflow {
+impl Error for BufferError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         None
     }
@@ -119,7 +110,7 @@ impl MessageBuffer {
         // how much space is left in the buffer?
         // does it make sense to try a partial write?
         if message_string.len() > (rfc::MAX_MSG_SIZE - self.index) {
-            return Err(BufferError::OverFlow);
+            return Err(BufferError::Overflow);
         }
         for &byte in message_string.as_bytes() {
             self.buffer[self.index] = byte;
@@ -130,7 +121,7 @@ impl MessageBuffer {
 
     pub fn append_bytes(&mut self, buf: &[u8]) -> Result<(), BufferError> {
         if buf.len() > (rfc::MAX_MSG_SIZE - self.index) {
-            return Err(BufferError::OverFlow);
+            return Err(BufferError::Overflow);
         }
         for i in 0 .. buf.len() {
             self.buffer[self.index + i] = buf[i];
