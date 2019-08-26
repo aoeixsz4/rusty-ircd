@@ -159,7 +159,7 @@ impl Future for ClientFuture {
 
         // is connection/client dead? drop from list and return Ready to complete our future
         if client.dead == true {
-            return self.unlink_client(&mut client);
+            return self.unlink_client(&client);
         }
 
         // if its the first time polling, we need to register our task
@@ -170,15 +170,15 @@ impl Future for ClientFuture {
 
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
-	if let Err(_e) = self.try_flush(&mut client) {
-            return self.unlink_client(&mut client);
+	if let Err(_e) = self.try_flush(&client) {
+            return self.unlink_client(&client);
         }
 
         // try to read into our client's in-buffer
         match self.try_read(&mut client) {
             Ok(Async::NotReady) => (), // do nothing
-            Ok(Async::Ready(_)) => return self.unlink_client(&mut client), // EOF
-            Err(_e) => return self.unlink_client(&mut client) // Connection error
+            Ok(Async::Ready(_)) => return self.unlink_client(&client), // EOF
+            Err(_e) => return self.unlink_client(&client) // Connection error
         }
 
         // loop while client's input buffer contains line delimiters
