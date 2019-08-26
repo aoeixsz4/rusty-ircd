@@ -1,10 +1,34 @@
 // this module contains a buffer type for reading and writing to sockets
 // and will be involved in the transfer of control from the event system
 // to the core irc protocol handlers
+use std::error::Error;
+use std::fmt;
 use crate::irc::rfc_defs as rfc;
 
-pub enum BufferError {
-    OverFlow,
+pub enum BufferErrorType {
+    OverflowIn,
+    OverflowOut
+}
+
+#[derive(Debug)]
+pub struct BufferError {
+    err_type: BufferErrorType
+}
+
+impl fmt::Display for BufferOverflow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let src = match self.err_type {
+            BufferErrorType::OverflowIn => "input",
+            BufferErrorType::OverflowOut => "output"
+        };
+        write!(f, "Buffer overflow in client {} buffer", src);
+    }
+}
+
+impl Error for BufferOverflow {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
 }
 
 // might not always want this public
