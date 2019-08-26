@@ -54,10 +54,12 @@ pub struct ClientList {
 
 impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
-    fn drop(&mut self, client: &mut Client)
+    // remove client from list on EOF or connection error
+    fn unlink_client(&mut self, client: &Client)
         -> Poll<<self::ClientFuture as Future>::Item, Box<dyn Error> {
         let mut client_list = self.client_list.lock().unwrap();
-        // what do we do if client doesnt exist in map?
+        // what do we do if client doesnt exist in map? this will likely panic,
+        // under current implementation
         client_list.map.remove(&client.id)?;
         Ok(Async::Ready(()))
     }
@@ -80,7 +82,7 @@ impl ClientFuture {
             match client.socket.poll_write(&tmp_buf[write_count .. len]) {
                 Ok(Async::Ready(bytes_out)) => write_count += bytes_out, // track how much we've written
                 Ok(Async::NotReady) => break,
-                Err(e) => return Err(e)
+                Err(e) => return Err(Box::new(e))
             }
         }
 
@@ -108,10 +110,13 @@ impl ClientFuture {
             match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
                 Ok(Async::Ready(bytes_read)) if bytes_read == 0 =>
                     // EOF - this Future completes when the client is no more
+                    // WARNING - possible edge case:
+                    // client writes a valid message followed directly by EOF,
+                    // we end up ignoring their message in the buffer
                     return Ok(Async::Ready(())),
                 Ok(Async::Ready(bytes_read)) => tmp_index += bytes_read,
-                Ok(Async::NotReady) => return Async::NotReady,
-                Err(e) => return Err(e)
+                Ok(Async::NotReady) => break, // can't read no more
+                Err(e) => return Err(Box::new(e))
             }
         }
 
@@ -127,19 +132,19 @@ impl ClientFuture {
 
     // forward incoming message to other users
     fn broadcast(&mut self, map: &HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
-        for (id, other_client) in map {
+        for (id, target) in map {
             // skip writing to ourself
             if *id == self.id {
                 continue;
             }
             
             // get a mutex on the other client
-            let mut other_client = other_client.lock().unwrap();
+            let mut target = target.lock().unwrap();
 
-            // send_line() takes care of notifying the Future and flags
+            // send_line() takes care of notifying the Future's task and flags
             // the client as dead if the append fails (indicates full buffer
             // (indicates flushes are not successful))
-            other_client.send_line(&msg);
+            target.send_line(&msg);
         }
     }
 }
@@ -154,7 +159,7 @@ impl Future for ClientFuture {
 
         // is connection/client dead? drop from list and return Ready to complete our future
         if client.dead == true {
-            return self.drop(&mut client);
+            return self.unlink_client(&mut client);
         }
 
         // if its the first time polling, we need to register our task
@@ -166,14 +171,14 @@ impl Future for ClientFuture {
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
 	if let Err(_e) = self.try_flush(&mut client) {
-            return self.drop(&mut client);
+            return self.unlink_client(&mut client);
         }
 
         // try to read into our client's in-buffer
         match self.try_read(&mut client) {
             Ok(Async::NotReady) => (), // do nothing
-            Ok(Async::Ready(_)) => return self.drop(&mut client), // EOF
-            Err(_e) => return self.drop(&mut client) // Connection error
+            Ok(Async::Ready(_)) => return self.unlink_client(&mut client), // EOF
+            Err(_e) => return self.unlink_client(&mut client) // Connection error
         }
 
         // loop while client's input buffer contains line delimiters
