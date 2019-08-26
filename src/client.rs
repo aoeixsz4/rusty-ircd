@@ -10,6 +10,7 @@ use crate::parser;
 
 use std::sync::{Mutex, Arc};
 use std::net::SocketAddr;
+use std::error::Error;
 use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -26,7 +27,7 @@ pub enum ClientCommand {
 }
 
 // this future is a wrapper to the Client struct, and implements the polling code
-struct ClientFuture {
+pub struct ClientFuture {
     client: Arc<Mutex<Client>>,
     client_list: Arc<Mutex<ClientList>>,
     id: u32, // same as client id
@@ -46,24 +47,22 @@ pub struct Client { // is it weird/wrong to have an object with the same name as
     dead: bool // this will be flagged if poll() needs to remove the client
 }
 
-struct ClientList {
+pub struct ClientList {
     map: HashMap<u32, Arc<Mutex<Client>>>,
     next_id: u32
 }
 
-impl Future for ClientFuture {
-    type Item = ();
-    type Error = ();
-
+impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
-    fn drop(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn drop(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error> {
         let mut client_list = self.client_list.lock().unwrap();
-        client_list.map.remove(&client.id);
-        return Ok(Async::Ready(()));
+        // what do we do if client doesnt exist in map?
+        client_list.map.remove(&client.id)?;
+        Ok(Async::Ready(()))
     }
     
     // to be called from polling future
-    fn try_flush(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error>  {
+    fn try_flush(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error> {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
@@ -94,7 +93,7 @@ impl Future for ClientFuture {
         }
 
         // only return Ready when it's time to drop the client
-        return Ok(Async::NotReady);
+        Ok(Async::NotReady)
     }
 
     fn try_read(&mut self, client: &mut Client) -> Poll<Self::Item, Self::Error> {
@@ -123,7 +122,7 @@ impl Future for ClientFuture {
 
     // forward incoming message to other users
     fn broadcast(&mut self, map: &mut HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
-        for (id, other_client) in &client_list.map {
+        for (id, other_client) in &map {
             // skip writing to ourself
             if *id == self.id {
                 continue;
@@ -138,7 +137,11 @@ impl Future for ClientFuture {
             other_client.send_line(&msg);
         }
     }
+}
 
+impl Future for ClientFuture {
+    type Item = ();
+    type Error = ();
     // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let client = Arc::clone(&self.client);
@@ -167,11 +170,11 @@ impl Future for ClientFuture {
             Ok(Async::Ready(_)) => return self.drop(&mut client), // EOF
             Err(_e) => return self.drop(&mut client) // Connection error
         }
-                    
+
         // loop while client's input buffer contains line delimiters
         let client_list = self.client_list.lock().unwrap();
         while client.input.has_delim() {
-            let msg_string = inbuf.extract_ln();
+            let msg_string = client.input.extract_ln();
             self.broadcast(&client_list, msg_string);
         }
         Ok(Async::NotReady)
@@ -224,11 +227,10 @@ impl Client {
     // the function also notifies the runtime that the socket handler needs
     // to be polled to flush the write
     pub fn send_line(&mut self, buf: &str) {
-        let mut outbuf = self.output.lock().unwrap();
         let mut string = String::from_utf8_lossy(&buf).to_string();
         string.push_str("\r\n");
         self.handler.notify();
-        if let Err(_e) = output.append_str(string) {
+        if let Err(_e) = self.output.append_str(string) {
             self.dead = true;
         }
     }

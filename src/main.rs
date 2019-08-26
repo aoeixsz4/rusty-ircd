@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use crate::buffer::MessageBuffer;
 use crate::client::{Client, ClientFuture, ClientList};
+use futures::task;
 
 // will want to at some point merge this with existing client and messagebuffer code in client.rs
 // and buffer.rs
@@ -25,7 +26,7 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
     let client = {
         let mut clients = clients.lock().unwrap();
         id = clients.next_id;
-        let client = Arc::new(Mutex::new(Client::new(id, task::current, sock)));
+        let client = Arc::new(Mutex::new(Client::new(id, task::current(), sock)));
         // actual hashmap is inside ClientList struct
         clients.map.insert(id, Arc::clone(&client));
 
