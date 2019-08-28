@@ -1,7 +1,10 @@
 // this module contains a buffer type for reading and writing to sockets
 // and will be involved in the transfer of control from the event system
 // to the core irc protocol handlers
+use std::io::Error as IoError;
+use std::io::ErrorKind as IoErrorKind;
 use std::error::Error;
+use std::convert::From;
 use std::fmt;
 use crate::irc::rfc_defs as rfc;
 
@@ -21,6 +24,13 @@ impl Error for BufferError {
         None
     }
 }
+
+impl From<BufferError> for IoError {
+    fn from(_e: BufferError) -> Self {
+       IoError::new(IoErrorKind::Other, "buffer overflow")
+    }
+}
+
 
 // might not always want this public
 pub struct MessageBuffer {
