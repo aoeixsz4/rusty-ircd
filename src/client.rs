@@ -28,10 +28,10 @@ pub enum ClientCommand {
 
 // this future is a wrapper to the Client struct, and implements the polling code
 pub struct ClientFuture {
-    client: Arc<Mutex<Client>>,
-    client_list: Arc<Mutex<ClientList>>,
-    id: u32, // same as client id
-    first_poll: bool,
+    pub client: Arc<Mutex<Client>>,
+    pub client_list: Arc<Mutex<ClientList>>,
+    pub id: u32, // same as client id
+    pub first_poll: bool,
 }
 
 pub struct Client { // is it weird/wrong to have an object with the same name as the module?
@@ -130,7 +130,7 @@ impl ClientFuture {
     }
 
     // forward incoming message to other users
-    fn broadcast(&mut self, map: &HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
+    fn broadcast(&self, map: &HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
         for (id, target) in map {
             // skip writing to ourself
             if *id == self.id {
