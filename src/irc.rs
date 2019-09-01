@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use std::collections::HashMap;
 use std::clone::Clone;
 use crate::client;
+use crate::client::ClientList;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
 // main difference is the parser's variants only contain strings (either for hostname
@@ -126,7 +127,7 @@ pub struct Channel {
 // maybe it's possible just to have the Core in an Arc<T>,
 // and give each thread a pointer to the core?
 pub struct Core {
-    clients: Arc<Mutex<client::ClientList>>,                    // maps client IDs to clients
+    clients: Arc<Mutex<ClientList>>,                    // maps client IDs to clients
     nicks: Arc<Mutex<HashMap<String, u64>>>,                    // maps nicknames to unique ids
     users: Arc<Mutex<HashMap<u64, Arc<Mutex<User>>>>>,          // maps user IDs to users
     channels: Arc<Mutex<HashMap<String, Arc<Mutex<Channel>>>>>, // maps channames to Channel data structures
@@ -140,7 +141,11 @@ pub struct Core {
 impl Core {
     pub fn new () -> Self {
         // initialize hash tables for clients, servers, commands
-        let clients = Arc::new(Mutex::new(client::ClientList::new()));
+        // clones of the "irc Core" are passed as a field within
+        // ClientFuture, but we can still have a client list within
+        // irc::Core, as Client is a seperate element within ClientFuture,
+        // so we still avoid cyclic refs
+        let clients = Arc::new(Mutex::new(ClientList::new()));
         let nicks = Arc::new(Mutex::new(HashMap::new()));
         let commands = Arc::new(Mutex::new(HashMap::new()));
         let servers  = Arc::new(Mutex::new(HashMap::new()));
