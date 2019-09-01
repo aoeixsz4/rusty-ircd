@@ -33,7 +33,7 @@ pub struct ClientList {
 }
 
 impl ClientList {
-    fn new() -> Self {
+    pub fn new() -> Self {
         ClientList {
             map: HashMap::new(),
             next_id: 0

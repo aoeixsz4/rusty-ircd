@@ -127,12 +127,12 @@ pub struct Channel {
 // maybe it's possible just to have the Core in an Arc<T>,
 // and give each thread a pointer to the core?
 pub struct Core {
-    clients: Arc<Mutex<ClientList>>,                    // maps client IDs to clients
-    nicks: Arc<Mutex<HashMap<String, u64>>>,                    // maps nicknames to unique ids
-    users: Arc<Mutex<HashMap<u64, Arc<Mutex<User>>>>>,          // maps user IDs to users
-    channels: Arc<Mutex<HashMap<String, Arc<Mutex<Channel>>>>>, // maps channames to Channel data structures
-    servers: Arc<Mutex<HashMap<u64, Arc<Mutex<Server>>>>>,      // maps server IDs to servers
-    commands: Arc<Mutex<HashMap<String, Arc<Mutex<Command>>>>>  // map of commands
+    pub clients: Arc<Mutex<ClientList>>,                    // maps client IDs to clients
+    pub nicks: Arc<Mutex<HashMap<String, u64>>>,                    // maps nicknames to unique ids
+    pub users: Arc<Mutex<HashMap<u64, Arc<Mutex<User>>>>>,          // maps user IDs to users
+    pub channels: Arc<Mutex<HashMap<String, Arc<Mutex<Channel>>>>>, // maps channames to Channel data structures
+    pub servers: Arc<Mutex<HashMap<u64, Arc<Mutex<Server>>>>>,      // maps server IDs to servers
+    pub commands: Arc<Mutex<HashMap<String, Arc<Mutex<Command>>>>>  // map of commands
 }
 
 // init hash tables
