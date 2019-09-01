@@ -125,24 +125,26 @@ pub struct Channel {
 // maybe it's possible just to have the Core in an Arc<T>,
 // and give each thread a pointer to the core?
 pub struct Core {
-    clients: Mutex<HashMap<u64, Mutex<client::Client>>>,// maps client IDs to clients
-    nicks: Mutex<HashMap<String, u64>>,                 // maps nicknames to unique ids
-    users: Mutex<HashMap<u64, Mutex<User>>>,            // maps user IDs to users
-    channels: Mutex<HashMap<String, Mutex<Channel>>>,   // maps channames to Channel data structures
-    servers: Mutex<HashMap<u64, Mutex<Server>>>,        // maps server IDs to servers
-    commands: HashMap<String, Command>                  // map of commands
+    clients: Arc<Mutex<client::ClientList>>,                    // maps client IDs to clients
+    nicks: Arc<Mutex<HashMap<String, u64>>>,                    // maps nicknames to unique ids
+    users: Arc<Mutex<HashMap<u64, Arc<Mutex<User>>>>>,          // maps user IDs to users
+    channels: Arc<Mutex<HashMap<String, Arc<Mutex<Channel>>>>>, // maps channames to Channel data structures
+    servers: Arc<Mutex<HashMap<u64, Arc<Mutex<Server>>>>>,      // maps server IDs to servers
+    commands: Arc<Mutex<HashMap<String, Arc<Mutex<Command>>>>>  // map of commands
 }
 
 // init hash tables
+// let's have this copyable, so whatever thread is doing stuff,
+// needs to only mutex lock one hashmap at a time
 impl Core {
-    pub fn init () -> Core {
+    pub fn new () -> Core {
         // initialize hash tables for clients, servers, commands
-        let clients = Mutex::new(HashMap::new());
-        let nicks = Mutex::new(HashMap::new());
-        let mut commands = HashMap::new();
-        let servers  = Mutex::new(HashMap::new());
-        let users = Mutex::new(HashMap::new());
-        let channels = Mutex::new(HashMap::new());
+        let clients = Arc::new(Mutex::new(client::ClientList::new()));
+        let nicks = Arc::new(Mutex::new(HashMap::new()));
+        let commands = Arc::new(Mutex::new(HashMap::new()));
+        let servers  = Arc::new(Mutex::new(HashMap::new()));
+        let users = Arc::new(Mutex::new(HashMap::new()));
+        let channels = Arc::new(Mutex::new(HashMap::new()));
         Core {
             clients,
             nicks,
