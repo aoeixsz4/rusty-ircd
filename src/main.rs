@@ -13,27 +13,28 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::buffer::MessageBuffer;
 use crate::client::{Client, ClientFuture, ClientList};
 use futures::{task, Stream};
+use irc::Core;
 
 // will want to at some point merge this with existing client and messagebuffer code in client.rs
 // and buffer.rs
 
-fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFuture {
+fn process_socket(sock: TcpStream, irc_core: Core) -> ClientFuture {
     // borrow checker complains about mutex locked clients
     // borrowing stuff when a move happens
     // so we can deliberately descope it before that
     // scope id here to use later
     let mut id = 0;
     let client = {
-        let mut clients = clients.lock().unwrap();
-        id = clients.next_id;
+        let mut clients = irc_core.clients.lock().unwrap();
+        id = irc_core.clients.next_id;
         let client = Arc::new(Mutex::new(Client::new(id, task::current(), sock)));
         // actual hashmap is inside ClientList struct
-        clients.map.insert(id, Arc::clone(&client));
+        irc_core.clients.map.insert(id, Arc::clone(&client));
 
         // increment id value, this will only ever go up, integer overflow will wreak havoc,
         // but i doubt we reach enough clients for this to happen - should
         // be handled in any final release of code though, *just in case*
-        clients.next_id += 1;   
+        irc_core.clients.next_id += 1;
         println!("client connected: id = {}", clients.next_id);
         client
     }; // drop mutex locked clients list
@@ -42,7 +43,7 @@ fn process_socket(sock: TcpStream, clients: Arc<Mutex<ClientList>>) -> ClientFut
     // and we don't have any reference cycles
     ClientFuture {
         client: Arc::clone(&client),
-        client_list: clients,
+        irc_core,               // client_list is now within irc_core
         id,
         first_poll: true
     }
@@ -54,10 +55,7 @@ fn main() {
     // Ups, this will just try to connect to above address,
     // we want to bind to it
     let listener = TcpListener::bind(&addr).unwrap();
-    let clients = Arc::new(Mutex::new(ClientList {
-        next_id: 0,
-        map: HashMap::new()
-    }));
+    let irc_core = Core::new();
 
     let server = listener.incoming()
         .map_err(|e| println!("failed to accept stream, error = {:?}", e))
@@ -65,7 +63,7 @@ fn main() {
             // clone needs to happen before the function call, otherwise clients is moved into process_socket
             // and then we don't get it back for the next iteration of the loop
             let clients = Arc::clone(&clients);         
-            tokio::spawn(process_socket(sock, clients))
+            tokio::spawn(process_socket(sock, irc_core.clone()))
         });
 
     tokio::run(server);

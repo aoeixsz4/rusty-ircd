@@ -37,6 +37,7 @@ pub struct ClientFuture {
     pub client_list: Arc<Mutex<ClientList>>,
     pub id: u32, // same as client id
     pub first_poll: bool,
+    pub irc_core: irc::Core
 }
 
 impl ClientFuture {
