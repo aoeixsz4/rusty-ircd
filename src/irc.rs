@@ -4,7 +4,7 @@
 
 pub mod rfc_defs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::clone::Clone;
 use crate::client;
@@ -165,12 +165,12 @@ impl Core {
 impl Clone for Core {
     fn clone (&self) -> Self {
         Core {
-            clients: Arc::clone(self.clients),
-            nicks: Arc::clone(self.nicks),
-            commands: Arc::clone(self.commands),
-            channels: Arc::clone(self.servers),
-            users: Arc::clone(self.users),
-            servers: Arc::clone(self.channels)
+            clients: Arc::clone(&self.clients),
+            nicks: Arc::clone(&self.nicks),
+            commands: Arc::clone(&self.commands),
+            channels: Arc::clone(&self.channels),
+            users: Arc::clone(&self.users),
+            servers: Arc::clone(&self.servers)
         }
     }
 }
