@@ -19,6 +19,7 @@ use futures::task;
 use futures::task::Task;
 use crate::buffer::MessageBuffer;
 use crate::irc::rfc_defs as rfc;
+use crate::irc::Core;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -31,20 +32,28 @@ pub struct ClientList {
     pub next_id: u32
 }
 
+impl ClientList {
+    fn new() -> Self {
+        ClientList {
+            map: HashMap::new(),
+            next_id: 0
+        }
+    }
+}
+
 // this future is a wrapper to the Client struct, and implements the polling code
 pub struct ClientFuture {
     pub client: Arc<Mutex<Client>>,
-    pub client_list: Arc<Mutex<ClientList>>,
     pub id: u32, // same as client id
     pub first_poll: bool,
-    pub irc_core: irc::Core
+    pub irc_core: Core
 }
 
 impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
     // remove client from list on EOF or connection error
     fn unlink_client(&mut self, client: &Client) {
-        let mut client_list = self.client_list.lock().unwrap();
+        let mut client_list = self.irc_core.clients.lock().unwrap();
         // HashMap::remove() returns an Option<T>, so we can either
         // ignore the possibility that the client is alread unlinked, or deliberately panic
         // (since if this fails, there may well be a bug elsewhere
@@ -170,7 +179,7 @@ impl Future for ClientFuture {
         }
 
         // loop while client's input buffer contains line delimiters
-        let client_list = self.client_list.lock().unwrap();
+        let client_list = self.irc_core.clients.lock().unwrap();
         while client.input.has_delim() {
             let msg_string = client.input.extract_ln();
             self.broadcast(&client_list.map, &msg_string);
