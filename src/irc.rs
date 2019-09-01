@@ -6,6 +6,7 @@ pub mod rfc_defs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Mutex;
 use std::collections::HashMap;
+use std::clone::Clone;
 use crate::client;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
@@ -137,7 +138,7 @@ pub struct Core {
 // let's have this copyable, so whatever thread is doing stuff,
 // needs to only mutex lock one hashmap at a time
 impl Core {
-    pub fn new () -> Core {
+    pub fn new () -> Self {
         // initialize hash tables for clients, servers, commands
         let clients = Arc::new(Mutex::new(client::ClientList::new()));
         let nicks = Arc::new(Mutex::new(HashMap::new()));
@@ -152,6 +153,19 @@ impl Core {
             channels,
             users,
             servers
+        }
+    }
+}
+
+impl Clone for Core {
+    fn clone (&self) -> Self {
+        Core {
+            clients: Arc::clone(self.clients),
+            nicks: Arc::clone(self.nicks),
+            commands: Arc::clone(self.commands),
+            channels: Arc::clone(self.servers),
+            users: Arc::clone(self.users),
+            servers: Arc::clone(self.channels)
         }
     }
 }
