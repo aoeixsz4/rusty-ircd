@@ -26,15 +26,15 @@ fn process_socket(sock: TcpStream, irc_core: Core) -> ClientFuture {
     let mut id = 0;
     let client = {
         let mut clients = irc_core.clients.lock().unwrap();
-        id = irc_core.clients.next_id;
+        id = clients.next_id;
         let client = Arc::new(Mutex::new(Client::new(id, task::current(), sock)));
         // actual hashmap is inside ClientList struct
-        irc_core.clients.map.insert(id, Arc::clone(&client));
+        clients.map.insert(id, Arc::clone(&client));
 
         // increment id value, this will only ever go up, integer overflow will wreak havoc,
         // but i doubt we reach enough clients for this to happen - should
         // be handled in any final release of code though, *just in case*
-        irc_core.clients.next_id += 1;
+        clients.next_id += 1;
         println!("client connected: id = {}", clients.next_id);
         client
     }; // drop mutex locked clients list
@@ -62,7 +62,6 @@ fn main() {
         .for_each(move |sock| {
             // clone needs to happen before the function call, otherwise clients is moved into process_socket
             // and then we don't get it back for the next iteration of the loop
-            let clients = Arc::clone(&clients);         
             tokio::spawn(process_socket(sock, irc_core.clone()))
         });
 
