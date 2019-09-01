@@ -26,30 +26,17 @@ pub enum ClientCommand {
     Empty
 }
 
+pub struct ClientList {
+    pub map: HashMap<u32, Arc<Mutex<Client>>>,
+    pub next_id: u32
+}
+
 // this future is a wrapper to the Client struct, and implements the polling code
 pub struct ClientFuture {
     pub client: Arc<Mutex<Client>>,
     pub client_list: Arc<Mutex<ClientList>>,
     pub id: u32, // same as client id
     pub first_poll: bool,
-}
-
-pub struct Client { // is it weird/wrong to have an object with the same name as the module?
-    // will need a hash table for joined channels
-    //channels: type unknown
-    socket: TcpStream,
-    //flags: some sort of enum vector?
-    //host: irc::Host,
-    id: u32,
-    input: MessageBuffer,
-    output: MessageBuffer,
-    handler: Task,
-    dead: bool // this will be flagged if poll() needs to remove the client
-}
-
-pub struct ClientList {
-    pub map: HashMap<u32, Arc<Mutex<Client>>>,
-    pub next_id: u32
 }
 
 impl ClientFuture {
@@ -191,6 +178,26 @@ impl Future for ClientFuture {
     }
 }
 
+pub enum ClientType {
+    Unknown,
+    User(Arc<Mutex<irc::User>>),
+    Server(Arc<Mutex<irc::Server>>)
+}
+
+pub struct Client { // is it weird/wrong to have an object with the same name as the module?
+    // will need a hash table for joined channels
+    //channels: type unknown
+    socket: TcpStream,
+    //flags: some sort of enum vector?
+    //host: irc::Host,
+    client_type: ClientType,
+    id: u32,
+    input: MessageBuffer,
+    output: MessageBuffer,
+    handler: Task,
+    dead: bool // this will be flagged if poll() needs to remove the client
+}
+
 // externally, clients will probably be collected in a vector/hashmap somewhere
 // each client will have a unique identifier: their host (type irc::Host),
 // each must have a socket associated with it
@@ -208,6 +215,7 @@ impl Client {
             output: buffer::MessageBuffer::new(),
             input: buffer::MessageBuffer::new(),
             handler: task, // placeholder
+            client_type: ClientType::Unknown, // this will be established by a user or server handshake
             dead: false,
             socket,
             id
