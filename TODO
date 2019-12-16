@@ -24,3 +24,5 @@ to REALLY be done next:
     ° monitors for incoming writes
     ° relays all complete lines (CRLF terminated) to all other clients
     ° no IRC message parsing (to begin with)
+
+ o look at pest or nom for the message parsing
