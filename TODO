@@ -1,30 +1,4 @@
-next?
- ° start putting client writes through the parsing engine,
- ° implement login handshake (USER/NICK whatever)
-
-NEW FIRST THING TO DO:
- ° write an async io program that binds to a port and accepts connections
-
-so far:
- ° the parsing engine is fairly complete
- ° bits and pieces of runtime data structuring have been mapped out, i.e.
-    ° client, user and server structs - hash tables with ids for each
-    ° what else?
- ° irc/rfc_defs.rs has a list of checks for nicks, chan names etc. conforming to spec
-
-to be done next:
- ° async IO model for sockets (tokio) -done
- ° implement appropriate callbacks for:
-    ° client connections -done
-    ° client writes -done
-    ° dropped connections -done
- ° be thread aware for all the above, -yes
- ° then implement a thread pool for work handling -tokio seems to be doing this
-
-to REALLY be done next:
- ° write a small async test program using tokio, with the following spec:
-    ° binds to a port - check
-    ° accepts incoming connections - check
-    ° monitors for incoming writes - check
-    ° relays all complete lines (CRLF terminated) to all other clients -check
-    ° no IRC message parsing (to begin with)
+ o create command handler with match block and individual command functions
+ o begin implementing necessary commands for login handshake:
+   (PASS) followed by NICK and USER for clients or PASS followed by SERVICE for services
+   initial implementation will be limited to NICK and USER for client connections
