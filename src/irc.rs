@@ -174,3 +174,9 @@ impl Clone for Core {
         }
     }
 }
+
+// handle command should take a Client and a ParseMsg
+// the command string will be converted to uppercase and a match block
+// will redirect to the specific command handler
+impl handle_command () {
+}
