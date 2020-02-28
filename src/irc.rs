@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::clone::Clone;
 use crate::client;
 use crate::client::ClientList;
+use parser::ParsedMsg;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
 // main difference is the parser's variants only contain strings (either for hostname
@@ -178,5 +179,5 @@ impl Clone for Core {
 // handle command should take a Client and a ParseMsg
 // the command string will be converted to uppercase and a match block
 // will redirect to the specific command handler
-impl handle_command () {
+fn handle_command (client: &mut Client, params: ParsedMsg) {
 }

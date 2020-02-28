@@ -23,10 +23,6 @@ use crate::irc::Core;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-pub enum ClientCommand {
-    Empty
-}
-
 pub struct ClientList {
     pub map: HashMap<u32, Arc<Mutex<Client>>>,
     pub next_id: u32
@@ -179,10 +175,11 @@ impl Future for ClientFuture {
         }
 
         // loop while client's input buffer contains line delimiters
-        let client_list = self.irc_core.clients.lock().unwrap();
         while client.input.has_delim() {
             let msg_string = client.input.extract_ln();
-            self.broadcast(&client_list.map, &msg_string);
+            assert!(msg_string.len() != 0);
+            let parsed_msg = parser::parse_message(&msg_string)?;
+            irc::handle_command(&mut client, params);
         }
         Ok(Async::NotReady)
     }
@@ -230,24 +227,6 @@ impl Client {
             socket,
             id
         }
-    }
-
-    // an event handler waiting on new data from the client
-    // must call this handler when a CR-LF is found
-    // return type is a ClientCommand, which will be processed elsewhere
-    pub fn end_of_line(&mut self) -> Result<ClientCommand, parser::ParseError> {
-        // NB: buffer index might not be directly after the CR-LF
-        // first bit of code locates a CR-LF
-        // next bit extracts a string and moves buffer data after CR-LF
-        // to front, reseting the index afterwards
-        let command_string = self.input.extract_ln();
-
-        // i will insist that the event handler doesn't hand us empty lines
-        assert!(command_string.len() != 0);
-        let parsed_msg = parser::parse_message(&command_string)?;
-
-        // do something with the parsed message, irc.rs code needs to get involved
-        Ok(ClientCommand::Empty)
     }
 
     // fn sends a line to the client - this function adds the cr-lf delimiter,
