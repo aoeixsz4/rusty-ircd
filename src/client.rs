@@ -7,6 +7,7 @@ extern crate futures;
 use crate::buffer;
 use crate::irc;
 use crate::parser;
+use parser::ParseError;
 
 use std::sync::{Mutex, Arc};
 use std::net::SocketAddr;
@@ -178,8 +179,18 @@ impl Future for ClientFuture {
         while client.input.has_delim() {
             let msg_string = client.input.extract_ln();
             assert!(msg_string.len() != 0);
-            let parsed_msg = parser::parse_message(&msg_string)?;
-            irc::handle_command(&mut client, params);
+            let parsed_msg_res = parser::parse_message(&msg_string);
+            match parsed_msg_res {
+                Ok(msg) => irc::handle_command(&mut client, msg),
+                Err(parse_err) => match parse_err {
+                    ParseError::InvalidPrefix => client.send_line("invalid prefix!")
+                    ParseError::NoCommand => client.send_line("no command given!")
+                    ParseError::InvalidCommand => client.send_line("invalid command!")
+                    ParseError::InvalidNick => client.send_line("invalid nick!")
+                    ParseError::InvalidUser => client.send_line("invalid user!")
+                    ParseError::InvalidHost => client.send_line("invalid host!")
+                }
+            }
         }
         Ok(Async::NotReady)
     }
