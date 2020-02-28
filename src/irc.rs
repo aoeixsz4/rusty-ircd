@@ -180,4 +180,9 @@ impl Clone for Core {
 // the command string will be converted to uppercase and a match block
 // will redirect to the specific command handler
 fn handle_command (client: &mut Client, params: ParsedMsg) {
+    // we're matching a String to some &str literals, so may need this &
+    match &params.command {
+        "NICK" => cmd_nick(&mut client, params), // <-- will the borrow checker hate me for this? let's see...
+        "USER" => cmd_user(&mut client, params)
+    }
 }

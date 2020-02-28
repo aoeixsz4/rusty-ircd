@@ -95,7 +95,7 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
             } else {
                 return Ok(ParsedMsg {
                     opt_prefix,
-                    command,
+                    command.to_upper(), // this will make irc::handle_command() have an easier time
                     opt_params: None
                 });
             }
@@ -247,4 +247,3 @@ fn split_colon_arg(msg: &str) -> (&str, Option<&str>) {
         (msg, None)
     }
 }
-
