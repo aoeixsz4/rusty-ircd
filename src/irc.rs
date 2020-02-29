@@ -10,6 +10,9 @@ use std::clone::Clone;
 use crate::client;
 use crate::client::{Client,ClientList,ClientType};
 use crate::parser::ParsedMsg;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use dns_lookup::lookup_addr;
+use tokio::net::TcpStream;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
 // main difference is the parser's variants only contain strings (either for hostname
@@ -211,15 +214,24 @@ fn cmd_nick(client: &mut Client, params: ParsedMsg) {
                 let username = proto_user.username.unwrap();
                 let real_name = proto_user.real_name.unwrap();
                 // now we need to create a real User for the client
-                client.client_type = ClientType::User(Arc::new(Mutex::new(User {
-                    id: client.id,
-                    nick: args[0],
-                    username,
-                    real_name,
-                    host: asdf,
-                    channel_list: Vec::new(),
-                    flags: UserFlags { registered: true }
-                })));
+                if let Some(address) = client.socket.peer_addr() {
+                    let host = if let Ok(h) = lookup_addr(&address) {
+                        h
+                    } else {
+                        String::from(address)
+                    };
+                    client.client_type = ClientType::User(Arc::new(Mutex::new(User {
+                        id: client.id,
+                        nick: args[0],
+                        username,
+                        real_name,
+                        host: asdf,
+                        channel_list: Vec::new(),
+                        flags: UserFlags { registered: true }
+                    })));
+                } else {
+                    client.dead = true;
+                }
             }
             ClientType::Server(server_ref) => return,
         }

@@ -23,6 +23,7 @@ use crate::irc::rfc_defs as rfc;
 use crate::irc::Core;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use dns_lookup::lookup_addr;
 
 pub struct ClientList {
     pub map: HashMap<u64, Arc<Mutex<Client>>>,
