@@ -25,8 +25,8 @@ use crate::irc::Core;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub struct ClientList {
-    pub map: HashMap<u32, Arc<Mutex<Client>>>,
-    pub next_id: u32
+    pub map: HashMap<u64, Arc<Mutex<Client>>>,
+    pub next_id: u64
 }
 
 impl ClientList {
@@ -41,7 +41,7 @@ impl ClientList {
 // this future is a wrapper to the Client struct, and implements the polling code
 pub struct ClientFuture {
     pub client: Arc<Mutex<Client>>,
-    pub id: u32, // same as client id
+    pub id: u64, // same as client id
     pub first_poll: bool,
     pub irc_core: Core
 }
@@ -124,7 +124,7 @@ impl ClientFuture {
     }
 
     // forward incoming message to other users
-    fn broadcast(&self, map: &HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
+    fn broadcast(&self, map: &HashMap<u64, Arc<Mutex<Client>>>, msg: &str) {
         for (id, target) in map {
             // skip writing to ourself
             if *id == self.id {
@@ -183,11 +183,11 @@ impl Future for ClientFuture {
             match parsed_msg_res {
                 Ok(msg) => irc::handle_command(&mut self.irc_core, &mut client, msg),
                 Err(parse_err) => match parse_err {
-                    ParseError::InvalidPrefix => client.send_line("invalid prefix!")
-                    ParseError::NoCommand => client.send_line("no command given!")
-                    ParseError::InvalidCommand => client.send_line("invalid command!")
-                    ParseError::InvalidNick => client.send_line("invalid nick!")
-                    ParseError::InvalidUser => client.send_line("invalid user!")
+                    ParseError::InvalidPrefix => client.send_line("invalid prefix!"),
+                    ParseError::NoCommand => client.send_line("no command given!"),
+                    ParseError::InvalidCommand => client.send_line("invalid command!"),
+                    ParseError::InvalidNick => client.send_line("invalid nick!"),
+                    ParseError::InvalidUser => client.send_line("invalid user!"),
                     ParseError::InvalidHost => client.send_line("invalid host!")
                 }
             }
@@ -206,15 +206,15 @@ pub enum ClientType {
 pub struct Client { // is it weird/wrong to have an object with the same name as the module?
     // will need a hash table for joined channels
     //channels: type unknown
-    socket: TcpStream,
+    pub socket: TcpStream,
     //flags: some sort of enum vector?
     //host: irc::Host,
-    client_type: ClientType,
-    id: u64,
-    input: MessageBuffer,
-    output: MessageBuffer,
-    handler: Task,
-    dead: bool // this will be flagged if poll() needs to remove the client
+    pub client_type: ClientType,
+    pub id: u64,
+    pub input: MessageBuffer,
+    pub output: MessageBuffer,
+    pub handler: Task,
+    pub dead: bool // this will be flagged if poll() needs to remove the client
 }
 
 // externally, clients will probably be collected in a vector/hashmap somewhere
@@ -229,13 +229,12 @@ impl Client {
     // we'll need a socket type as a parameter
     // implementation decision: explicitly return as a pointer to heap data
     // will also be necessary that all threads can access every client object
-    pub fn new(id: u32, task: Task, socket: TcpStream) -> Client {
+    pub fn new(id: u64, task: Task, socket: TcpStream) -> Client {
         Client {
             output: buffer::MessageBuffer::new(),
             input: buffer::MessageBuffer::new(),
             handler: task, // placeholder
-            client_type: ClientType::Unknown, // this will be established by a user or server handshake
-            registered: false,
+            client_type: ClientType::Unregistered, // this will be established by a user or server handshake
             dead: false,
             socket,
             id

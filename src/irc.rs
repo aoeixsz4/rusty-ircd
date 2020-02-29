@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::clone::Clone;
 use crate::client;
-use crate::client::{ClientList,ClientType};
-use parser::ParsedMsg;
+use crate::client::{Client,ClientList,ClientType};
+use crate::parser::ParsedMsg;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
 // main difference is the parser's variants only contain strings (either for hostname
@@ -40,7 +40,7 @@ pub enum Command {
     Part(Vec<String>, Option<String>), // #channel, part-message
     Message(Vec<String>, String), // dest (user/#channel), message
     Nick(String), // choose nickname
-    User(String, u32, String), // choose username (might need addition parameters)
+    User(String, u64, String), // choose username (might need addition parameters)
     Quit(Option<String>), // quit-message
 }
 
@@ -183,15 +183,15 @@ impl Clone for Core {
 // handle command should take a Client and a ParseMsg
 // the command string will be converted to uppercase and a match block
 // will redirect to the specific command handler
-fn handle_command (core: &mut Core, client: &mut Client, params: ParsedMsg) {
+pub fn handle_command (core: &mut Core, client: &mut Client, params: ParsedMsg) {
     // we're matching a String to some &str literals, so may need this &
-    match &params.command {
+    match &params.command[..] {
         "NICK" => cmd_nick(&mut client, params), // <-- will the borrow checker hate me for this? let's see...
 //        "USER" => cmd_user(&mut client, params) //      possibly not, since it's immutable and passed-ownership
     }
 }
 
-fn cmd_nick(client: &mut client, params: ParsedMsg) {
+fn cmd_nick(client: &mut Client, params: ParsedMsg) {
     let args: Vec<String>;
     if let Some(args) = params.opt_params {
         match client.client_type { // I think maybe the borrow checker will hate me for reassigning client_type within its own match block
@@ -219,7 +219,7 @@ fn cmd_nick(client: &mut client, params: ParsedMsg) {
                     host: asdf,
                     channel_list: Vec::new(),
                     flags: UserFlags { registered: true }
-                };
+                })));
             }
             ClientType::Server(server_ref) => return,
         }
