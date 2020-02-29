@@ -181,7 +181,7 @@ impl Future for ClientFuture {
             assert!(msg_string.len() != 0);
             let parsed_msg_res = parser::parse_message(&msg_string);
             match parsed_msg_res {
-                Ok(msg) => irc::handle_command(&mut client, msg),
+                Ok(msg) => irc::handle_command(&mut self.irc_core, &mut client, msg),
                 Err(parse_err) => match parse_err {
                     ParseError::InvalidPrefix => client.send_line("invalid prefix!")
                     ParseError::NoCommand => client.send_line("no command given!")
@@ -197,9 +197,10 @@ impl Future for ClientFuture {
 }
 
 pub enum ClientType {
-    Unknown,
+    Unregistered,
     User(Arc<Mutex<irc::User>>),
-    Server(Arc<Mutex<irc::Server>>)
+    Server(Arc<Mutex<irc::Server>>),
+    ProtoUser(Arc<Mutex<irc::ProtoUser>>)
 }
 
 pub struct Client { // is it weird/wrong to have an object with the same name as the module?
@@ -209,7 +210,7 @@ pub struct Client { // is it weird/wrong to have an object with the same name as
     //flags: some sort of enum vector?
     //host: irc::Host,
     client_type: ClientType,
-    id: u32,
+    id: u64,
     input: MessageBuffer,
     output: MessageBuffer,
     handler: Task,
@@ -234,6 +235,7 @@ impl Client {
             input: buffer::MessageBuffer::new(),
             handler: task, // placeholder
             client_type: ClientType::Unknown, // this will be established by a user or server handshake
+            registered: false,
             dead: false,
             socket,
             id
