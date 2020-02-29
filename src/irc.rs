@@ -214,11 +214,11 @@ fn cmd_nick(client: &mut Client, params: ParsedMsg) {
                 let username = proto_user.username.unwrap();
                 let real_name = proto_user.real_name.unwrap();
                 // now we need to create a real User for the client
-                if let Some(address) = client.socket.peer_addr() {
+                if let Ok(address) = client.socket.peer_addr() {
                     let host = if let Ok(h) = lookup_addr(&address) {
                         h
                     } else {
-                        String::from(address)
+                        address.to_string()
                     };
                     client.client_type = ClientType::User(Arc::new(Mutex::new(User {
                         id: client.id,
