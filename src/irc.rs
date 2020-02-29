@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::clone::Clone;
 use crate::client;
-use crate::client::ClientList;
+use crate::client::{ClientList,ClientType};
 use parser::ParsedMsg;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
@@ -59,15 +59,19 @@ pub struct UserFlags {
 // which are remote, we have to remove their names from the target list and substitute in a server,
 // so we need to know which server acts as a relay for each remote user
 pub struct User {
-    id: u64,                            // this acts as a unique identifier for the user
+    id: u64,                            // we can have this just be the same as the client_id
     nick: String,
     username: String,
     real_name: String,
     host: Host,
     channel_list: Vec<String>,
-    flags: UserFlags,
-    remote: bool,                       // if true, client_id is a server, otherwise it is the user
-    client_id: u64
+    flags: UserFlags
+}
+
+pub struct ProtoUser {
+    nick: Option<String>,
+    username: Option<String>,
+    real_name: Option<String>
 }
 
 pub struct ServerUserFlags {
@@ -179,10 +183,47 @@ impl Clone for Core {
 // handle command should take a Client and a ParseMsg
 // the command string will be converted to uppercase and a match block
 // will redirect to the specific command handler
-fn handle_command (client: &mut Client, params: ParsedMsg) {
+fn handle_command (core: &mut Core, client: &mut Client, params: ParsedMsg) {
     // we're matching a String to some &str literals, so may need this &
     match &params.command {
         "NICK" => cmd_nick(&mut client, params), // <-- will the borrow checker hate me for this? let's see...
-        "USER" => cmd_user(&mut client, params)
+//        "USER" => cmd_user(&mut client, params) //      possibly not, since it's immutable and passed-ownership
+    }
+}
+
+fn cmd_nick(client: &mut client, params: ParsedMsg) {
+    let args: Vec<String>;
+    if let Some(args) = params.opt_params {
+        match client.client_type { // I think maybe the borrow checker will hate me for reassigning client_type within its own match block
+            ClientType::Unregistered => { // in this case we need to create a "proto user"
+                client.client_type = ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
+                    nick: Some(args[0]),
+                    username: None,
+                    real_name: None })));
+                client.send_line("created a proto user thingy :o");
+            },
+            ClientType::User(user_ref) => { // just a nick change
+                let user = user_ref.lock().unwrap();
+                user.nick = args[0];
+            },
+            ClientType::ProtoUser(proto_user_ref) => { // in this case we already got USER
+                let proto_user = proto_user_ref.lock().unwrap();
+                let username = proto_user.username.unwrap();
+                let real_name = proto_user.real_name.unwrap();
+                // now we need to create a real User for the client
+                client.client_type = ClientType::User(Arc::new(Mutex::new(User {
+                    id: client.id,
+                    nick: args[0],
+                    username,
+                    real_name,
+                    host: asdf,
+                    channel_list: Vec::new(),
+                    flags: UserFlags { registered: true }
+                };
+            }
+            ClientType::Server(server_ref) => return,
+        }
+    } else {
+        client.send_line("not enough parameters!");
     }
 }
