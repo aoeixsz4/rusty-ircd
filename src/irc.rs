@@ -10,7 +10,6 @@ use std::clone::Clone;
 use crate::client;
 use crate::client::{Client,ClientList,ClientType};
 use crate::parser::ParsedMsg;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use dns_lookup::lookup_addr;
 use tokio::net::TcpStream;
 
@@ -186,54 +185,70 @@ impl Clone for Core {
 // handle command should take a Client and a ParseMsg
 // the command string will be converted to uppercase and a match block
 // will redirect to the specific command handler
-pub fn handle_command (core: &mut Core, client: &mut Client, params: ParsedMsg) {
+pub fn handle_command (core: &mut Core, mut client: &mut Client, params: ParsedMsg) {
     // we're matching a String to some &str literals, so may need this &
     match &params.command[..] {
         "NICK" => cmd_nick(&mut client, params), // <-- will the borrow checker hate me for this? let's see...
 //        "USER" => cmd_user(&mut client, params) //      possibly not, since it's immutable and passed-ownership
+        _ => client.send_line("unkown command")
     }
 }
 
 fn cmd_nick(client: &mut Client, params: ParsedMsg) {
     let args: Vec<String>;
     if let Some(args) = params.opt_params {
-        match client.client_type { // I think maybe the borrow checker will hate me for reassigning client_type within its own match block
+        let nick = args[0].clone();
+        // modification of client.client_type cannot occur within match block or with an outer
+        // assignment
+        let new_type = match &client.client_type {
             ClientType::Unregistered => { // in this case we need to create a "proto user"
-                client.client_type = ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
-                    nick: Some(args[0]),
-                    username: None,
-                    real_name: None })));
                 client.send_line("created a proto user thingy :o");
+                Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
+                    nick: Some(nick),
+                    username: None,
+                    real_name: None }))))
             },
             ClientType::User(user_ref) => { // just a nick change
-                let user = user_ref.lock().unwrap();
-                user.nick = args[0];
+                let mut user = user_ref.lock().unwrap();
+                user.nick = nick;
+                None
             },
             ClientType::ProtoUser(proto_user_ref) => { // in this case we already got USER
                 let proto_user = proto_user_ref.lock().unwrap();
-                let username = proto_user.username.unwrap();
-                let real_name = proto_user.real_name.unwrap();
+                let username = match &proto_user.username {
+                    Some(user) => user.clone(),
+                    None => panic!("no user")
+                };
+                let real_name = match &proto_user.real_name {
+                    Some(rname) => rname.clone(),
+                    None => panic!("no real name")
+                };
                 // now we need to create a real User for the client
                 if let Ok(address) = client.socket.peer_addr() {
-                    let host = if let Ok(h) = lookup_addr(&address) {
-                        h
+                    // rdns to get the hostname, or assign a string to the host
+                    let host = if let Ok(h) = lookup_addr(&address.ip()) {
+                        Host::Hostname(h)
                     } else {
-                        address.to_string()
+                        Host::HostAddr(address.ip())
                     };
-                    client.client_type = ClientType::User(Arc::new(Mutex::new(User {
+                    Some(ClientType::User(Arc::new(Mutex::new(User {
                         id: client.id,
-                        nick: args[0],
+                        nick,
                         username,
                         real_name,
-                        host: asdf,
+                        host,
                         channel_list: Vec::new(),
                         flags: UserFlags { registered: true }
-                    })));
+                    }))))
                 } else {
                     client.dead = true;
+                    None
                 }
             }
-            ClientType::Server(server_ref) => return,
+            ClientType::Server(_server_ref) => None,
+        };
+        if let Some(client_type) = new_type {
+            client.client_type = client_type;
         }
     } else {
         client.send_line("not enough parameters!");
