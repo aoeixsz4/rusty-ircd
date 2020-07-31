@@ -188,67 +188,185 @@ impl Clone for Core {
 pub fn handle_command (core: &mut Core, mut client: &mut Client, params: ParsedMsg) {
     // we're matching a String to some &str literals, so may need this &
     match &params.command[..] {
-        "NICK" => cmd_nick(&mut client, params), // <-- will the borrow checker hate me for this? let's see...
-//        "USER" => cmd_user(&mut client, params) //      possibly not, since it's immutable and passed-ownership
+        "NICK" => cmd_nick(&mut client, params), // <-- will the borrow checker hate me for this? no,
+        "USER" => cmd_user(&mut client, params),  //     since it's immutable and passed-ownership, borrow-happy
         _ => client.send_line("unkown command")
     }
 }
 
-fn cmd_nick(client: &mut Client, params: ParsedMsg) {
+fn register(client: &Client, nick: String, username: String, real_name: String) -> Option<ClientType> {
+    if let Ok(address) = client.socket.peer_addr() {
+    // rdns to get the hostname, or assign a string to the host
+        let host = if let Ok(h) = lookup_addr(&address.ip()) {
+            Host::Hostname(h)
+        } else {
+            Host::HostAddr(address.ip())
+        };
+        Some(ClientType::User(Arc::new(Mutex::new(User {
+            id: client.id,
+            nick,
+            username,
+            real_name,
+            host,
+            channel_list: Vec::new(),
+            flags: UserFlags { registered: true }
+            }))))
+    } else {
+        None
+    }
+}
+
+fn cmd_user(mut client: &mut Client, params: ParsedMsg) {
+    let args: Vec<String>;
+
+    if let Some(args) = params.opt_params {
+        // a USER command should have exactly four parameters
+        // <username> <hostname> <servername> <realname>,
+        // though we ignore the middle two unless a server is
+        // forwarding the message
+        if args.len() != 4 {
+            // strictly speaking this should be an RFC-compliant
+            // numeric error ERR_NEEDMOREPARAMS
+            client.send_line("incorrect number of parameters");
+            return;
+        }
+        let username = args[0].clone();
+        let real_name = args[3].clone();
+
+        // tuple Some(&str), Some(ClientType), bool died
+        let (message_o, new_type_o, died) = match &client.client_type {
+            ClientType::Unregistered => {
+                // initiate handshake
+                (   Some(String::from("HELLO! welcome to IRC, new user")),
+                    Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
+                        nick: None,
+                        username: Some(username),
+                        real_name: Some(real_name)})))),
+                    false
+                )
+            },
+            ClientType::User(user_ref) => {
+                // already registered! can't change username
+                (   Some(String::from("you are already registered!")),
+                    None,
+                    false
+                )
+            },
+            ClientType::ProtoUser(proto_user_ref) => {
+                // got nick already? if so, complete registration
+                let proto_user = proto_user_ref.lock().unwrap();
+                if let Some(nick) = &proto_user.nick {
+                    // had nick already, complete registration
+                    if let Some(reg_type) = register(&client, nick.clone(), username, real_name) {
+                        (   Some(String::from("welcome, new user!")),
+                            Some(reg_type),
+                            false
+                        )
+                    } else {
+                        (   None,
+                            None,
+                            true    // connection died
+                        )
+                    }
+                } else {
+                    // can only send USER once
+                    (   Some(String::from("you already sent USER")),
+                        None,
+                        false
+                    )
+                }
+            },
+            ClientType::Server(_server_ref) => (None, None, false)
+        };
+        // did we return a message?
+        if let Some(message) = message_o {
+            client.send_line(&message);
+        }
+
+        // update client type if necessary
+        if let Some(client_type) = new_type_o {
+            client.client_type = client_type;
+        }
+
+        // connection error?
+        if died == true {
+            client.dead = true;
+        }
+    }
+}
+
+
+fn cmd_nick(mut client: &mut Client, params: ParsedMsg) {
     let args: Vec<String>;
     if let Some(args) = params.opt_params {
         let nick = args[0].clone();
-        // modification of client.client_type cannot occur within match block or with an outer
-        // assignment
-        let new_type = match &client.client_type {
+        // we can return a tuple and send messages after the match
+        // to avoid borrowing mutably inside the immutable borrow
+        // (Some(&str), Some(ClientType), bool died)
+        let (message_o, new_type_o, died) = match &client.client_type {
             ClientType::Unregistered => { // in this case we need to create a "proto user"
-                client.send_line("created a proto user thingy :o");
-                Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
-                    nick: Some(nick),
-                    username: None,
-                    real_name: None }))))
+                (   Some(String::from("created a proto user thingy :o")),
+                    Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
+                        nick: Some(nick),
+                        username: None,
+                        real_name: None })))),
+                    false
+                )
             },
             ClientType::User(user_ref) => { // just a nick change
                 let mut user = user_ref.lock().unwrap();
                 user.nick = nick;
-                None
+                (   None,
+                    None,
+                    false
+                )
             },
             ClientType::ProtoUser(proto_user_ref) => { // in this case we already got USER
-                let proto_user = proto_user_ref.lock().unwrap();
-                let username = match &proto_user.username {
-                    Some(user) => user.clone(),
-                    None => panic!("no user")
-                };
-                let real_name = match &proto_user.real_name {
-                    Some(rname) => rname.clone(),
-                    None => panic!("no real name")
-                };
-                // now we need to create a real User for the client
-                if let Ok(address) = client.socket.peer_addr() {
-                    // rdns to get the hostname, or assign a string to the host
-                    let host = if let Ok(h) = lookup_addr(&address.ip()) {
-                        Host::Hostname(h)
-                    } else {
-                        Host::HostAddr(address.ip())
-                    };
-                    Some(ClientType::User(Arc::new(Mutex::new(User {
-                        id: client.id,
-                        nick,
-                        username,
-                        real_name,
-                        host,
-                        channel_list: Vec::new(),
-                        flags: UserFlags { registered: true }
-                    }))))
+                let mut proto_user = proto_user_ref.lock().unwrap();
+                // need to account for the case where NICK is sent
+                // twice without any user command
+                if let Some(_) = &proto_user.nick {
+                    (   Some(String::from("you need to send USER to complete registration")),
+                        Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
+                            nick: Some(nick),
+                            username: None,
+                            real_name: None })))),
+                        false
+                    )
                 } else {
-                    client.dead = true;
-                    None
+                    // full registration! wooo
+                    let username = match &proto_user.username {
+                        Some(user) => user.clone(),
+                        None => panic!("no user")  // these panics are legit now
+                    };
+                    let real_name = match &proto_user.real_name {
+                        Some(rname) => rname.clone(),
+                        None => panic!("no real name") // i think
+                    };
+                    if let Some(ctype) = register(&client, nick, username, real_name) {
+                        (   Some(String::from("Welcome to IRC! You are registered")),
+                            Some(ctype),
+                            false
+                        )
+                    } else {
+                        (   None,
+                            None,
+                            true // dead client
+                        )
+                    }
                 }
-            }
-            ClientType::Server(_server_ref) => None,
+            },
+            ClientType::Server(_server_ref) => ( None, None, false )
         };
-        if let Some(client_type) = new_type {
+
+        if let Some(message) = message_o {
+            client.send_line(&message);
+        }
+        if let Some(client_type) = new_type_o {
             client.client_type = client_type;
+        }
+        if died == true {
+            client.dead = true;
         }
     } else {
         client.send_line("not enough parameters!");
