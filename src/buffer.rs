@@ -2,6 +2,7 @@
 // and will be involved in the transfer of control from the event system
 // to the core irc protocol handlers
 use std::io::Error as IoError;
+use std::sync::RwLock;
 use std::io::ErrorKind as IoErrorKind;
 use std::error::Error;
 use std::convert::From;
@@ -50,24 +51,28 @@ impl MessageBuffer {
     // buffer, but in principle it can be used for other things too
     // if dest_i > src_i it's more like a copy than a shift
     pub fn shift_bytes(&mut self, src_i: usize, dest_i: usize, len: usize) {
+        // Get RwLock
+        let lock = self.write().unwrap();
         // there's no need to copy everything to the very end of the buffer,
         // if it hasn't been completely filled
         for i in 0 .. len {
-            self.buffer[dest_i + i] = self.buffer[src_i + len];
+            lock.buffer[dest_i + i] = lock.buffer[src_i + len];
         }
-        self.index = dest_i + len;
+        lock.index = dest_i + len;
     }
 
     pub fn shift_bytes_to_start (&mut self, src_i: usize) {
-        self.shift_bytes(src_i, 0, self.index - src_i);
+        let lock = self.write().unwrap();
+        lock.shift_bytes(src_i, 0, lock.index - src_i);
     }
     
     fn get_eol (&self) -> Option<usize> {
-        if self.index < 2 {
+        let lock = self.read().unwrap();
+        if lock.index < 2 {
             return None;
         }
-        for i in 0..self.index - 1 {
-            if self.buffer[i] == ('\r' as u8) && self.buffer[i + 1] == ('\n' as u8) {
+        for i in 0..lock.index - 1 {
+            if lock.buffer[i] == ('\r' as u8) && lock.buffer[i + 1] == ('\n' as u8) {
                 return Some(i);
             }
         }
@@ -75,7 +80,8 @@ impl MessageBuffer {
     }
 
     pub fn has_delim (&self) -> bool {
-        match self.get_eol() {
+        let lock = self.read().unwrap();
+        match lock.get_eol() {
             Some(_) => true,
             None => false
         }
@@ -99,7 +105,8 @@ impl MessageBuffer {
             }
             None => {
                 let out = String::from_utf8_lossy(&self.buffer[..]).to_string();
-                self.index = 0;
+                let lock = self.write().unwrap();
+                lock.index = 0;
                 out
             }
         }
@@ -107,10 +114,11 @@ impl MessageBuffer {
 
     // need a pub fn to copy our private buffer to some external &mut borrowed buffer
     pub fn copy(&self, copy_buf: &mut [u8]) -> usize {
-        for i in 0 .. self.index {
-            copy_buf[i] = self.buffer[i];
+        let lock=self.read().unwrap();
+        for i in 0 .. lock.index {
+            copy_buf[i] = lock.buffer[i];
         }
-        self.index
+        lock.index
     }
 
     // we also want code for appending to these buffers, more for server-> client writes
@@ -122,9 +130,10 @@ impl MessageBuffer {
         if message_string.len() > (rfc::MAX_MSG_SIZE - self.index) {
             return Err(BufferError::Overflow);
         }
+        let lock = self.write().unwrap()
         for &byte in message_string.as_bytes() {
-            self.buffer[self.index] = byte;
-            self.index += 1;
+            lock.buffer[lock.index] = byte;
+            lock.index += 1;
         }
         return Ok(()); // returning Ok(current_index) as an output might be an option
     }
@@ -133,18 +142,19 @@ impl MessageBuffer {
         if buf.len() > (rfc::MAX_MSG_SIZE - self.index) {
             return Err(BufferError::Overflow);
         }
+        let lock = self.write().unwrap();
         for i in 0 .. buf.len() {
-            self.buffer[self.index + i] = buf[i];
+            lock.buffer[self.index + i] = buf[i];
         }
-        self.index += buf.len();
+        lock.index += buf.len();
         Ok(())
     }
 
     pub fn new() -> MessageBuffer {
-        MessageBuffer {
+        RwLock::new(MessageBuffer {
             buffer: [0; rfc::MAX_MSG_SIZE],
             index: 0,
-        }
+        })
     }
 }    
 

@@ -6,14 +6,14 @@ mod buffer;
 mod client;
 mod parser;
 
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Weak, RwLock};
 use std::net::SocketAddr;
 use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use crate::buffer::MessageBuffer;
-use crate::client::{Client, ClientFuture, ClientList};
+use crate::client::{Client, ClientFuture};
+use crate::irc::{Core, NamedEntity};
 use futures::{task, Stream};
-use irc::Core;
 
 // will want to at some point merge this with existing client and messagebuffer code in client.rs
 // and buffer.rs
@@ -23,28 +23,33 @@ fn process_socket(sock: TcpStream, irc_core: Core) -> ClientFuture {
     // borrowing stuff when a move happens
     // so we can deliberately descope it before that
     // scope id here to use later
-    let mut id = 0;
+    //
+    // need a proper Arc copy in order to write to this
+    // and not have borrowing/moving problems, I think
+    // also remember to clone a reference
+    let id_arc = Arc::clone(&irc_core.id_counter);
+    let mut id = id_arc.write().unwrap();
     let client = {
-        let mut clients = irc_core.clients.lock().unwrap();
-        id = clients.next_id;
-        let client = Arc::new(Mutex::new(Client::new(id, task::current(), sock)));
+        let client = Arc::new(RwLock::new(Client::new(*id, task::current(), sock)));
         // actual hashmap is inside ClientList struct
-        clients.map.insert(id, Arc::clone(&client));
+        let mut clients = irc_core.clients.write().unwrap();
+        clients.insert(*id, Arc::downgrade(&client));
 
         // increment id value, this will only ever go up, integer overflow will wreak havoc,
         // but i doubt we reach enough clients for this to happen - should
         // be handled in any final release of code though, *just in case*
-        clients.next_id += 1;
-        println!("client connected: id = {}", clients.next_id);
+        println!("client connected: id = {}", *id);
+        *id += 1;
         client
     }; // drop mutex locked clients list
-    // here we still keep ownership of a fresh Arc<Mutex<ClientList>> from outside this fn call
+    //
     // we can now return a future containing client data and a pointer to the client list,
     // and we don't have any reference cycles
     ClientFuture {
-        client: Arc::clone(&client),
-        irc_core,               // client_list is now within irc_core
-        id,
+        client,
+        // irc_core is already cloned in main()
+        irc_core,        // client_list is now within irc_core
+        id: *id,
         first_poll: true
     }
 }

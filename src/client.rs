@@ -9,7 +9,7 @@ use crate::irc;
 use crate::parser;
 use parser::ParseError;
 
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, RwLock, Weak};
 use std::net::SocketAddr;
 use std::io::{Error, ErrorKind};
 use std::collections::HashMap;
@@ -25,23 +25,23 @@ use crate::irc::Core;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use dns_lookup::lookup_addr;
 
-pub struct ClientList {
-    pub map: HashMap<u64, Arc<Mutex<Client>>>,
-    pub next_id: u64
-}
-
-impl ClientList {
-    pub fn new() -> Self {
-        ClientList {
-            map: HashMap::new(),
-            next_id: 0
-        }
-    }
-}
+//pub struct ClientList {
+//    pub map: HashMap<u64, Arc<Mutex<Client>>>,
+//    pub next_id: u64
+//}
+//
+//impl ClientList {
+//    pub fn new() -> Self {
+//        ClientList {
+//            map: HashMap::new(),
+//            next_id: 0
+//        }
+//    }
+//}
 
 // this future is a wrapper to the Client struct, and implements the polling code
 pub struct ClientFuture {
-    pub client: Arc<Mutex<Client>>,
+    pub client: Arc<RwLock<Client>>,
     pub id: u64, // same as client id
     pub first_poll: bool,
     pub irc_core: Core
@@ -50,26 +50,34 @@ pub struct ClientFuture {
 impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
     // remove client from list on EOF or connection error
-    fn unlink_client(&mut self, client: &Client) {
-        let mut client_list = self.irc_core.clients.lock().unwrap();
+    fn unlink_client(&mut self) {
+        let mut client_list = self.irc_core.clients.write().unwrap();
         // HashMap::remove() returns an Option<T>, so we can either
         // ignore the possibility that the client is alread unlinked, or deliberately panic
         // (since if this fails, there may well be a bug elsewhere
-        if let None = client_list.map.remove(&client.id) {
+        // client hash map is actually less important than some of the other stuff
+        // removing the Strong Arc pointers from ClientFuture will be the main thing
+        // ClientFuture has a strong Arc pointer to Client, which has a strong
+        // Arc pointer to User, and User has Strong Arc pointers to the hashes
+        // in Core, but they only contain weak pointers, so I think we're in the
+        // clear
+        // we should probably notify the irc core code to do something
+        // about a dropped client, but most of the memory stuff will
+        // be dealt with purely by ClientFuture leaving scope
+        if let None = client_list.remove(&self.id) {
             panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
         }
     }
     
     // to be called from polling future
-    fn try_flush(&mut self, client: &mut Client) -> Result<usize, Error> {
+    fn try_flush(&mut self) -> Result<usize, Error> {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
         let mut write_count: usize = 0;
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
 
-        // create a special scope where we use the Arc<Mutex<>> wrapper to copy stuff into 
-        // our temporary write buffer
+        let client = Arc::clone(&self.client).read().unwrap();
         let len = client.output.copy(&mut tmp_buf); // returns bytes copied
 
         // write as much as we can while just incrementing indices
@@ -95,7 +103,7 @@ impl ClientFuture {
         Ok(write_count)
     }
 
-    fn try_read(&mut self, client: &mut Client) -> Result<usize, Error> {
+    fn try_read(&mut self) -> Result<usize, Error> {
         // we'll read anything we can into a temp buffer first, then only later
         // transfer it to the mutex guarded client.output buffer
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
@@ -125,20 +133,21 @@ impl ClientFuture {
     }
 
     // forward incoming message to other users
-    fn broadcast(&self, map: &HashMap<u64, Arc<Mutex<Client>>>, msg: &str) {
+    fn broadcast(&self, map: &HashMap<u64, Weak<RwLock<Client>>>, msg: &str) {
         for (id, target) in map {
             // skip writing to ourself
             if *id == self.id {
                 continue;
             }
             
-            // get a mutex on the other client
-            let mut target = target.lock().unwrap();
+            let target_ptr = Weak::upgrade(target).unwrap();
+            let mut target_wl = target_ptr.write().unwrap();
+
 
             // send_line() takes care of notifying the Future's task and flags
             // the client as dead if the append fails (indicates full buffer
             // (indicates flushes are not successful))
-            target.send_line(&msg);
+            target_wl.send_line(&msg);
         }
     }
 }
@@ -148,60 +157,75 @@ impl Future for ClientFuture {
     type Error = ();
     // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let client = Arc::clone(&self.client);
-        let mut client = client.lock().unwrap();  // client is now under mutex lock
-
-        // is connection/client dead? drop from list and return Ready to complete our future
-        if client.dead == true {
-            self.unlink_client(&client);
-            return Ok(Async::Ready(()));
+        {
+            // make a mini-scope to minimise locks on client
+            let client_arc = Arc::clone(&self.client);
+            let client_ro = client_arc.read().unwrap();
+            // is connection/client dead? drop from list and return Ready to complete our future
+            if client_ro.dead == true {
+                self.unlink_client(&client_ro);
+                return Ok(Async::Ready(()));
+            }
         }
 
         // if its the first time polling, we need to register our task
         if self.first_poll == true {
             self.first_poll = false;
-            client.handler = task::current();
+            let client_arc = Arc::clone(&self.client);
+            let client_rw = client_arc.write().unwrap();
+            client_rw.handler = task::current();
         }
 
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
-	if let Err(_e) = self.try_flush(&mut client) {
-            self.unlink_client(&client);
-            return Ok(Async::Ready(()));
+        {
+            // make a mini-scope to minimise locks on client
+            let client_arc = Arc::clone(&self.client);
+            let client_ro = client_arc.read().unwrap();
+	        if let Err(_e) = self.try_flush() {
+                self.unlink_client();
+                return Ok(Async::Ready(()));
+            }
         }
 
         // try to read into our client's in-buffer
-        if let Err(_e) = self.try_read(&mut client) {
-            self.unlink_client(&client);
+        if let Err(_e) = self.try_read() {
+            self.unlink_client();
             return Ok(Async::Ready(()));
         }
 
-        // loop while client's input buffer contains line delimiters
-        while client.input.has_delim() {
-            let msg_string = client.input.extract_ln();
-            assert!(msg_string.len() != 0);
-            let parsed_msg_res = parser::parse_message(&msg_string);
-            match parsed_msg_res {
-                Ok(msg) => irc::handle_command(&mut self.irc_core, &mut client, msg),
-                Err(parse_err) => match parse_err {
-                    ParseError::InvalidPrefix => client.send_line("invalid prefix!"),
-                    ParseError::NoCommand => client.send_line("no command given!"),
-                    ParseError::InvalidCommand => client.send_line("invalid command!"),
-                    ParseError::InvalidNick => client.send_line("invalid nick!"),
-                    ParseError::InvalidUser => client.send_line("invalid user!"),
-                    ParseError::InvalidHost => client.send_line("invalid host!")
+        {
+            // make a mini-scope to minimise locks on client
+            let client_arc = Arc::clone(&self.client);
+            let client_ro = client_arc.read().unwrap();
+            // loop while client's input buffer contains line delimiters
+            while client_ro.input.has_delim() {
+                let msg_string = client_ro.input.extract_ln();
+                assert!(msg_string.len() != 0);
+                let parsed_msg_res = parser::parse_message(&msg_string);
+                match parsed_msg_res {
+                    Ok(msg) => irc::command(Arc::clone(&self.irc_core), Arc::clone(&client_ro), msg),
+                    Err(parse_err) => match parse_err {
+                        ParseError::InvalidPrefix => client_ro.send_line("invalid prefix!"),
+                        ParseError::NoCommand => client_ro.send_line("no command given!"),
+                        ParseError::InvalidCommand => client_ro.send_line("invalid command!"),
+                        ParseError::InvalidNick => client_ro.send_line("invalid nick!"),
+                        ParseError::InvalidUser => client_ro.send_line("invalid user!"),
+                        ParseError::InvalidHost => client_ro.send_line("invalid host!")
+                    }
                 }
             }
         }
+
         Ok(Async::NotReady)
     }
 }
 
 pub enum ClientType {
     Unregistered,
-    User(Arc<Mutex<irc::User>>),
-    Server(Arc<Mutex<irc::Server>>),
-    ProtoUser(Arc<Mutex<irc::ProtoUser>>)
+    User(Arc<RwLock<irc::User>>),
+    Server(Arc<RwLock<irc::Server>>),
+    ProtoUser(Arc<RwLock<irc::ProtoUser>>)
 }
 
 pub struct Client { // is it weird/wrong to have an object with the same name as the module?
