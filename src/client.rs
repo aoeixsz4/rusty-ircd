@@ -188,9 +188,9 @@ impl Future for ClientFuture {
 
 pub enum ClientType {
     Unregistered,
-    User(Arc<RwLock<irc::User>>),
-    Server(Arc<RwLock<irc::Server>>),
-    ProtoUser(Arc<RwLock<irc::ProtoUser>>)
+    User(Arc<Mutex<irc::User>>),
+    Server(Arc<Mutex<irc::Server>>),
+    ProtoUser(Arc<Mutex<irc::ProtoUser>>)
 }
 
 pub struct Client { // is it weird/wrong to have an object with the same name as the module?
