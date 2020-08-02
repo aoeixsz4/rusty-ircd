@@ -34,33 +34,18 @@ pub struct ClientFuture {
 }
 
 impl ClientFuture {
-    // call when client connection drops (either in error or if eof is received)
-    // remove client from list on EOF or connection error
-    fn unlink_client(&mut self) {
-        let mut client_list = self.irc_core.clients.try_lock().unwrap().or_else(|_| { Ok(Async::NotReady) });
-        // HashMap::remove() returns an Option<T>, so we can either
-        // ignore the possibility that the client is alread unlinked, or deliberately panic
-        // (since if this fails, there may well be a bug elsewhere
-        // client hash map is actually less important than some of the other stuff
-        // removing the Strong Arc pointers from ClientFuture will be the main thing
-        // ClientFuture has a strong Arc pointer to Client, which has a strong
-        // Arc pointer to User, and User has Strong Arc pointers to the hashes
-        // in Core, but they only contain weak pointers, so I think we're in the
-        // clear
-        // we should probably notify the irc core code to do something
-        // about a dropped client, but most of the memory stuff will
-        // be dealt with purely by ClientFuture leaving scope
-        if let None = client_list.remove(&self.id) {
-            panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
-        }
-    }
-    
     // to be called from polling future
     fn try_flush(&mut self) -> Result<usize, Error> {
         // now we also have the slightly annoying situation that if bytes_out < out_i,
         // we have to either do someething complicated with two indices, or shift
         // bytes to the start of the buffer every time a write completes
-        let client = self.client.try_lock().unwrap().or_else(|_| { Ok(Async::NotReady) });
+        
+        // try to get a lock on the client, non-blocking style
+        let mut client;
+        if let Ok(guard) = self.client.try_lock() {
+            client = guard;
+        } else { return Ok(Async::NotReady); }
+
         let mut write_count: usize = 0;
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
         let len = client.output.copy(&mut tmp_buf); // returns bytes copied
@@ -93,8 +78,13 @@ impl ClientFuture {
         // transfer it to the mutex guarded client.output buffer
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
         let mut tmp_index: usize = 0;
-        // ALL MUTEX LOCK ATTEMPTS TO BE NON-BLOCKING
-        let mut client = self.client.try_lock().unwrap().or_else(|_| { Ok(Async::NotReady) });
+
+        // try (non-blocking) to get lock on the client
+        let mut client;
+        if let Ok(guard) = self.client.try_lock() {
+            client = guard;
+        } else { return Ok(Async::NotReady); }
+
         while tmp_index < rfc::MAX_MSG_SIZE { // loop until there's nothing to read or the buffer's full
             match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
                 Ok(Async::Ready(bytes_read)) if bytes_read == 0 =>
@@ -126,70 +116,101 @@ impl Future for ClientFuture {
     // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // is connection/client dead? drop from list and return Ready to complete our future
-        if self.client.try_lock().unwrap()
-            .or_else(|_| { Ok(Async::NotReady) }).dead() {
-            self.unlink_client(&client);
-            return Ok(Async::Ready(()));
-        }
-
-        // if its the first time polling, we need to register our task
-        if self.first_poll == true {
-            self.first_poll = false;
-            self.client.try_lock().unwrap()
-                .or_else(|_| { Ok(Async::NotReady) }).set_handler(task::current());
+        if let Ok(client) self.client.try_lock() {
+            if self.first_poll == true {
+                self.first_poll = false;
+                client.set_handler(task::current);
+            }
+            if client.is_dead() {
+                return self.unlink_client();
+            }
+        } else {
+            return Ok(Async::NotReady),
         }
 
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
 	    if let Err(_e) = self.try_flush() {
-            self.unlink_client();
-            return Ok(Async::Ready(()));
+            return self.unlink_client();
         }
 
         // try to read into our client's in-buffer
         if let Err(_e) = self.try_read() {
-            self.unlink_client();
-            return Ok(Async::Ready(()));
+            return self.unlink_client();
         }
 
         // loop while client's input buffer contains line delimiters
-        while self.client.try_lock().unwrap()
-            .or_else(|_| { Ok(Async::NotReady) }).has_delim() {
-            let msg_string = self.client.try_lock().unwrap()
-                .or_else(|_| { Ok(Async::NotReady) }).input.extract_ln();
-            assert!(msg_string.len() != 0);
+        loop {
+            // by using the scope trick like this we don't keep
+            // the mutex lock after assigning to line
+            let try_line = if let Ok(client) = self.client.try_lock() {
+                client.try_get_line()
+            };
 
-            // let's collect responses to send to *this* client here,
-            // then irc.rs only needs to worry about forwarding stuff
-            let responses = parser::parse_message(&msg_string) {
-                Ok(msg) => irc::command(Arc::clone(&self.irc_core), Arc::clone(&self.client), msg),
-                Err(parse_err) => {
-                    let resp = Vec::new();
-                    resp.push(parser::err_to_msg(parse_err));
-                    resp
+            if let Some(message) = try_line {
+                let responses = match parser::parse_message(&message) {
+                    Ok(msg) => irc::command(Arc::clone(&self.irc_core), Arc::clone(&self.client), msg),
+                    Err(parse_err) => {
+                        let resp = Vec::new();
+                        resp.push(parser::err_to_msg(parse_err));
+                        resp
+                    }
                 }
-            }
 
-            for response in responses {
-                /* NOTICE: lossy behaviour on error, if
-                   the lock *does* fail, responses meant
-                   for the client will be dropped, so
-                   we may want to consider a way to spawn
-                   ClientSend Futures... */
-                self.client.try_lock().unwrap()
-                    .or_else(|_| { Ok(Async::NotReady) })
-                    .send_line(response);
+                for response in responses {
+                    /* NOTICE: lossy behaviour on error, if
+                       the lock *does* fail, responses meant
+                       for the client will be dropped, so
+                       we may want to consider a way to spawn
+                       ClientSend Futures... */
+                    if let Ok(client) = self.client.try_lock() {
+                        client.send_line(response);
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                break;
             }
         }
 
         Ok(Async::NotReady)
+    }
+
+    // call when client connection drops (either in error or if eof is received)
+    // remove client from list on EOF or connection error
+    fn unlink_client(&mut self) {
+        // HashMap::remove() returns an Option<T>, so we can either
+        // ignore the possibility that the client is alread unlinked, or deliberately panic
+        // (since if this fails, there may well be a bug elsewhere
+        // client hash map is actually less important than some of the other stuff
+        // removing the Strong Arc pointers from ClientFuture will be the main thing
+        // ClientFuture has a strong Arc pointer to Client, which has a strong
+        // Arc pointer to User, and User has Strong Arc pointers to the hashes
+        // in Core, but they only contain weak pointers, so I think we're in the
+        // clear
+        // we should probably notify the irc core code to do something
+        // about a dropped client, but most of the memory stuff will
+        // be dealt with purely by ClientFuture leaving scope
+        if let Ok(client_list) = self.irc_clore.clients.try_lock() {
+            if let None = client_list.remove(&self.id) {
+                panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
+            }
+        }
+        // regardless of whether or not the hashmap update worked,
+        // this ClientFuture returns ready now, finished!
+        // NOTICE_LEAKY --
+        //  wait no, not leaky. HashMap only contains Weak refs to
+        //  the User structure, Client had an Arc ref but Client
+        //  should drop when we do. I think it's fine.
+        Ok(Async::Ready)
     }
 }
 
 pub enum ClientType {
     Unregistered,
     User(Arc<Mutex<irc::User>>),
-    Server(Arc<Mutex<irc::Server>>),
+    //Server(Arc<Mutex<irc::Server>>), leave serv implmentation for much later
     ProtoUser(Arc<Mutex<irc::ProtoUser>>)
 }
 
@@ -242,7 +263,13 @@ impl Client {
         }
     }
 
-    pub fn has_delim(&self) -> bool {
-        self.input.has_delim()
+    /* just a wrapper for extract_ln()... it checks for
+     * a delimiter and returns None if there isn't one anyway */
+    pub fn try_get_line(&self) -> Option<String> {
+        self.input.extract_ln()
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.dead
     }
 }

@@ -89,18 +89,14 @@ impl MessageBuffer {
     // "return whatever string happens to currently be in there"
     // we'll also silently throw away the CR-LF itself and return
     // the line itself, already clipped
-    pub fn extract_ln(&mut self) -> String {
+    pub fn extract_ln(&mut self) -> Option<String> {
         match self.get_eol() {
             Some(i) => {
                 let out = String::from_utf8_lossy(&self.buffer[0..i]).to_string();
                 self.shift_bytes_to_start(i + 2);
-                out
-            }
-            None => {
-                let out = String::from_utf8_lossy(&self.buffer[..]).to_string();
-                index = 0;
-                out
-            }
+                Some(out)
+            },
+            None => None
         }
     }
 

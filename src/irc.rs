@@ -251,35 +251,17 @@ pub fn register (irc: Arc<Mutex<Core>>, client: Arc<Mutex<Client>>, nick: String
 // the command string will be converted to uppercase and a match block
 // will redirect to the specific command handler
 pub fn
-user_command
-(irc: &Core, mut user: &mut User, params: ParsedMsg) 
-{
-    // we're matching a String to some &str literals, so may need this &
-    match &params.command[..] {
-        "PRIVMSG" => msg(irc, client, params, MsgType::PrivateMsg),
-        "NOTICE" => msg(irc, client, params, MsgType::Notice),
-        //"JOIN" => self.join_channel(&mut user, params),
-        _ => {
-            let client_ptr = lookup_client(irc, &user.id).unwrap();
-            let client_arc = Weak::upgrade(&client_ptr).unwrap();
-            let mut client = client_arc.write().unwrap();
-            client.send_line("unkown command")
-        }
-    };
-}
-
-// handle command should take a Client and a ParseMsg
-// the command string will be converted to uppercase and a match block
-// will redirect to the specific command handler
-pub fn
 command
 (irc: Arc<Mutex<Core>, client: Arc<Mutex<Client>>, params: ParsedMsg)
     -> Vec<String>
 {
-    let client_t = client.try_lock().unwrap()
-        .or_else(|_|
-                 { ret = Vec::new(); ret.push(String::from("mutex error")); ret })
-        .client_type.clone();   // NOTICE_LOSSY
+    let client_t = client.lock().unwrap()
+        .client_type.clone();   // NOTICE_BLOCKY
+    let registered = if let client_t = ClientType::Unregistered {
+        false
+    } else {
+        true
+    };
     // also I think we want to clone it as the enum can contain an Arc,
     // and rather than move client type outside of the client struct,
     // we need to instead make Arc clones
@@ -287,16 +269,18 @@ command
     // after calling whatever command function, we don't use irc again,
     // so I think just moving the Arc is fine, don't have to clone
     match &params.command[..] {
-        "NICK" => nick(irc, client_t, params), // <-- will the borrow checker hate me for this? no,
-        "USER" => user(irc, client_t, params),  //     since it's immutable and passed-ownership, borrow-happy
-        "PRIVMSG" => msg(irc, client_t, params, MsgType::PrivateMsg),
-        "NOTICE" => msg(irc, client_t, params, MsgType::Notice),
+        "NICK" => nick(irc, client_t, params),
+        "USER" => user(irc, client_t, params),
+        "PRIVMSG" if registered =>
+            msg(irc, client_t, params, MsgType::PrivateMsg),
+        "NOTICE" if registered =>
+            msg(irc, client_t, params, MsgType::Notice),
         _ => { ret = Vec::new(); ret.push(String::from("unknown command"); ret }
     }
 }
 
 pub fn msg
-(irc: &Core, my_user: &mut User, params: ParsedMsg, msg_type: MsgType)
+(irc: &Core, from: ClientType, params: ParsedMsg, msg_type: MsgType)
     -> Vec<String>
 {
     println!("got a message command");
@@ -327,7 +311,7 @@ pub fn msg
             NamedEntity::User(user_ptr) => {
                 // NOTICE_BLOCKY
                 if let Err(msg) = user_ptr.upgrade().unwrap()
-                    .lock().unwrap().send_msg(&message) {
+                    .lock().unwrap().send_msg(from, &message) {
                         responses.push(msg);
                 }
             },
