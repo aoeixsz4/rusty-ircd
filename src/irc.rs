@@ -224,7 +224,7 @@ pub fn register (irc: Arc<Mutex<Core>>, client: Arc<Mutex<Client>>, nick: String
                 core: irc.clone(),
                 nick: nick.clone(),
                 username: username.clone(),
-                real_name: realname.clone(),
+                real_name: real_name.clone(),
                 host, // moves into struct here
                 channel_list: Vec::new(),
                 flags: UserFlags { registered: true }
@@ -252,7 +252,7 @@ pub fn register (irc: Arc<Mutex<Core>>, client: Arc<Mutex<Client>>, nick: String
 // will redirect to the specific command handler
 pub fn
 command
-(irc: Arc<Mutex<Core>, client: Arc<Mutex<Client>>, params: ParsedMsg)
+(irc: Arc<Mutex<Core>>, client: Arc<Mutex<Client>>, params: ParsedMsg)
     -> Vec<String>
 {
     let client_t = client.lock().unwrap()
@@ -275,12 +275,16 @@ command
             msg(irc, client_t, params, MsgType::PrivateMsg),
         "NOTICE" if registered =>
             msg(irc, client_t, params, MsgType::Notice),
-        _ => { ret = Vec::new(); ret.push(String::from("unknown command"); ret }
+        _ => {
+            let ret = Vec::new();
+            ret.push(String::from("unknown command"));
+            ret
+        }
     }
 }
 
 pub fn msg
-(irc: &Core, from: ClientType, params: ParsedMsg, msg_type: MsgType)
+(irc: &Core, msg_src: ClientType, params: ParsedMsg, msg_type: MsgType)
     -> Vec<String>
 {
     println!("got a message command");
@@ -292,7 +296,7 @@ pub fn msg
         Some(arg) => arg,
         None => {
             // probably wanna make an enum of all these
-            reponses.push(String::from("411 ERR_NORECIPIENT"));
+            responses.push(String::from("411 ERR_NORECIPIENT"));
             return responses;
         }
     }

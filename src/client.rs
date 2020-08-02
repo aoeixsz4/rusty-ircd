@@ -108,6 +108,34 @@ impl ClientFuture {
 
         Ok(tmp_index)
     }
+
+    // call when client connection drops (either in error or if eof is received)
+    // remove client from list on EOF or connection error
+    fn unlink_client(&mut self) {
+        // HashMap::remove() returns an Option<T>, so we can either
+        // ignore the possibility that the client is alread unlinked, or deliberately panic
+        // (since if this fails, there may well be a bug elsewhere
+        // client hash map is actually less important than some of the other stuff
+        // removing the Strong Arc pointers from ClientFuture will be the main thing
+        // ClientFuture has a strong Arc pointer to Client, which has a strong
+        // Arc pointer to User, and User has Strong Arc pointers to the hashes
+        // in Core, but they only contain weak pointers, so I think we're in the
+        // clear
+        // we should probably notify the irc core code to do something
+        // about a dropped client, but most of the memory stuff will
+        // be dealt with purely by ClientFuture leaving scope
+        if let Ok(client_list) = self.irc_clore.clients.try_lock() {
+            if let None = client_list.remove(&self.id) {
+                panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
+            }
+        }
+        // regardless of whether or not the hashmap update worked,
+        // this ClientFuture returns ready now, finished!
+        // NOTICE_LEAKY --
+        //  wait no, not leaky. HashMap only contains Weak refs to
+        //  the User structure, Client had an Arc ref but Client
+        //  should drop when we do. I think it's fine.
+    }
 }
 
 impl Future for ClientFuture {
@@ -116,13 +144,14 @@ impl Future for ClientFuture {
     // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // is connection/client dead? drop from list and return Ready to complete our future
-        if let Ok(client) self.client.try_lock() {
+        if let Ok(client) = self.client.try_lock() {
             if self.first_poll == true {
                 self.first_poll = false;
                 client.set_handler(task::current);
             }
             if client.is_dead() {
-                return self.unlink_client();
+                self.unlink_client();
+                return Ok(Async::Ready);
             }
         } else {
             return Ok(Async::NotReady),
@@ -131,12 +160,14 @@ impl Future for ClientFuture {
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
 	    if let Err(_e) = self.try_flush() {
-            return self.unlink_client();
+            self.unlink_client();
+            return Ok(Async::Ready);
         }
 
         // try to read into our client's in-buffer
         if let Err(_e) = self.try_read() {
-            return self.unlink_client();
+            self.unlink_client();
+            return Ok(Async::Ready);
         }
 
         // loop while client's input buffer contains line delimiters
@@ -175,35 +206,6 @@ impl Future for ClientFuture {
         }
 
         Ok(Async::NotReady)
-    }
-
-    // call when client connection drops (either in error or if eof is received)
-    // remove client from list on EOF or connection error
-    fn unlink_client(&mut self) {
-        // HashMap::remove() returns an Option<T>, so we can either
-        // ignore the possibility that the client is alread unlinked, or deliberately panic
-        // (since if this fails, there may well be a bug elsewhere
-        // client hash map is actually less important than some of the other stuff
-        // removing the Strong Arc pointers from ClientFuture will be the main thing
-        // ClientFuture has a strong Arc pointer to Client, which has a strong
-        // Arc pointer to User, and User has Strong Arc pointers to the hashes
-        // in Core, but they only contain weak pointers, so I think we're in the
-        // clear
-        // we should probably notify the irc core code to do something
-        // about a dropped client, but most of the memory stuff will
-        // be dealt with purely by ClientFuture leaving scope
-        if let Ok(client_list) = self.irc_clore.clients.try_lock() {
-            if let None = client_list.remove(&self.id) {
-                panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
-            }
-        }
-        // regardless of whether or not the hashmap update worked,
-        // this ClientFuture returns ready now, finished!
-        // NOTICE_LEAKY --
-        //  wait no, not leaky. HashMap only contains Weak refs to
-        //  the User structure, Client had an Arc ref but Client
-        //  should drop when we do. I think it's fine.
-        Ok(Async::Ready)
     }
 }
 
