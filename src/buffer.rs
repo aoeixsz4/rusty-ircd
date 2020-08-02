@@ -2,7 +2,6 @@
 // and will be involved in the transfer of control from the event system
 // to the core irc protocol handlers
 use std::io::Error as IoError;
-use std::sync::RwLock;
 use std::io::ErrorKind as IoErrorKind;
 use std::error::Error;
 use std::convert::From;
@@ -32,7 +31,6 @@ impl From<BufferError> for IoError {
     }
 }
 
-
 // might not always want this public
 pub struct MessageBuffer {
     // the IRC protocol defines a maximum message size of 512 bytes,
@@ -50,29 +48,25 @@ impl MessageBuffer {
     // this should normally be called to move a chunk of buffer content to the beginning of the
     // buffer, but in principle it can be used for other things too
     // if dest_i > src_i it's more like a copy than a shift
-    pub fn shift_bytes(&mut self, src_i: usize, dest_i: usize, len: usize) {
-        // Get RwLock
-        let lock = self.write().unwrap();
+    fn shift_bytes(&mut self, src_i: usize, dest_i: usize, len: usize) {
         // there's no need to copy everything to the very end of the buffer,
         // if it hasn't been completely filled
         for i in 0 .. len {
-            lock.buffer[dest_i + i] = lock.buffer[src_i + len];
+            buffer[dest_i + i] = buffer[src_i + i];
         }
-        lock.index = dest_i + len;
+        index = dest_i + len;
     }
 
     pub fn shift_bytes_to_start (&mut self, src_i: usize) {
-        let lock = self.write().unwrap();
-        lock.shift_bytes(src_i, 0, lock.index - src_i);
+        self.shift_bytes(src_i, 0, index - src_i);
     }
     
     fn get_eol (&self) -> Option<usize> {
-        let lock = self.read().unwrap();
-        if lock.index < 2 {
+        if index < 2 {
             return None;
         }
-        for i in 0..lock.index - 1 {
-            if lock.buffer[i] == ('\r' as u8) && lock.buffer[i + 1] == ('\n' as u8) {
+        for i in 0..index - 1 {
+            if buffer[i] == ('\r' as u8) && buffer[i + 1] == ('\n' as u8) {
                 return Some(i);
             }
         }
@@ -80,8 +74,7 @@ impl MessageBuffer {
     }
 
     pub fn has_delim (&self) -> bool {
-        let lock = self.read().unwrap();
-        match lock.get_eol() {
+        match self.get_eol() {
             Some(_) => true,
             None => false
         }
@@ -105,8 +98,7 @@ impl MessageBuffer {
             }
             None => {
                 let out = String::from_utf8_lossy(&self.buffer[..]).to_string();
-                let lock = self.write().unwrap();
-                lock.index = 0;
+                index = 0;
                 out
             }
         }
@@ -114,11 +106,10 @@ impl MessageBuffer {
 
     // need a pub fn to copy our private buffer to some external &mut borrowed buffer
     pub fn copy(&self, copy_buf: &mut [u8]) -> usize {
-        let lock=self.read().unwrap();
-        for i in 0 .. lock.index {
-            copy_buf[i] = lock.buffer[i];
+        for i in 0 .. index {
+            copy_buf[i] = buffer[i];
         }
-        lock.index
+        index
     }
 
     // we also want code for appending to these buffers, more for server-> client writes
@@ -130,10 +121,9 @@ impl MessageBuffer {
         if message_string.len() > (rfc::MAX_MSG_SIZE - self.index) {
             return Err(BufferError::Overflow);
         }
-        let lock = self.write().unwrap()
         for &byte in message_string.as_bytes() {
-            lock.buffer[lock.index] = byte;
-            lock.index += 1;
+            buffer[index] = byte;
+            index += 1;
         }
         return Ok(()); // returning Ok(current_index) as an output might be an option
     }
@@ -142,19 +132,97 @@ impl MessageBuffer {
         if buf.len() > (rfc::MAX_MSG_SIZE - self.index) {
             return Err(BufferError::Overflow);
         }
-        let lock = self.write().unwrap();
         for i in 0 .. buf.len() {
-            lock.buffer[self.index + i] = buf[i];
+            buffer[self.index + i] = buf[i];
         }
-        lock.index += buf.len();
+        index += buf.len();
         Ok(())
     }
 
     pub fn new() -> MessageBuffer {
-        RwLock::new(MessageBuffer {
+        MessageBuffer {
             buffer: [0; rfc::MAX_MSG_SIZE],
             index: 0,
-        })
+        }
     }
 }    
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ptr::eq;
+
+    #[test]
+    fn extract_ln_test() {
+        let buf = MessageBuffer::new();
+        let mut lilbuf = [0; 32];
+
+        buf.append_ln("foobar");
+        buf.append_ln("asdf");
+        buf.append_ln("OMGERD");
+        let foo_str = buf.extract_ln();
+        assert_eq!(&foo_str, "foobar");
+        buf.copy(&mut lilbuf);
+        let len = buf.index();
+        assert_eq!(len, 14);
+        let remnant_str = String::from_utf8_lossy(&lilbuf[..len]).to_string();
+        assert_eq!(&remnant_str, "asdf\r\nOMGERD\r\n");
+    }
+
+    #[test]
+    fn overflow_test() {
+        let buf = MessageBuffer::new();
+        let mut pass = false;
+        for i in 1 .. 20 {
+            if let Err(_) = buf.append_ln("I want this line to be fairly long to make sure 20 iterations is enough to ensure buffer overflow.") {
+                pass = true;
+            }
+        }
+        assert_eq!(pass, true);
+    }
+
+    #[test]
+    fn shift_bytes_test() {
+        // check that the index is updated correctly after 
+        // a shift of buffer data in MessageBuffer
+        let buf = MessageBuffer::new();
+        buf.append_str("y0bitrazy borstord.");
+        buf.append_str("y0u crai want arst.");
+        buf.append_str("y0ofcra\r\nndom rstord.");
+        buf.append_str("y0u crazy borstord.");
+        buf.append_str("just trydata i get.");
+        buf.append_str("yhererazn\r\n blittled.\r\n");
+        //let buf_l = buf.buffer.read().unwrap();
+        //let ind_l = buf.index.read().unwrap();
+
+        // this is mainly just used to shift everything
+        // to start of buffer. really simple & probably
+        // could be done with an iterator over slices
+        // but the code is here and it can do more than
+        // that so theyre may be interesting corner cases
+        // e.g. undesired behaviour if dest falls within
+        // src and len, this then fails the test comparing
+        // equality of the resulting strings
+
+        // however, this function can in principle copy n bytes
+        // starting from somewhere to some other particular location
+        // try something relatively simple first:
+        // copy 10 chars from pos 20 to pos 0
+        let mut tmp_buf = [0; 128];
+        let mut tmp_buf2  = [0; 128];
+        let tuples = [ (20, 0, 10, 1),
+                       (0, 45, 5, 3),
+                       (35, 40, 5, 4) ];
+        for tup in &tuples {
+            let (src, dest, len, iter) = *tup;
+            buf.copy(&mut tmp_buf);
+            buf.shift_bytes(src, dest, len);
+            buf.copy(&mut tmp_buf2);
+            let str_a = String::from_utf8_lossy(&tmp_buf[src..src+len]).to_string();
+            let str_b = String::from_utf8_lossy(&tmp_buf2[dest..dest+len]).to_string();
+            assert!(str_a.eq(&str_b),
+                    "failed {}th iteration; left: {}, right {}, src={}, dest={}, len={}",
+                    iter, &str_a, &str_b, src, dest, len);
+        }
+    }
+}
