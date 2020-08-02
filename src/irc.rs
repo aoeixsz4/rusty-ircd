@@ -4,7 +4,7 @@
 
 pub mod rfc_defs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::{Arc, Weak, RwLock};
+use std::sync::{Arc, Weak, Mutex};
 use std::collections::HashMap;
 use std::clone::Clone;
 use crate::client;
@@ -59,8 +59,8 @@ pub enum MsgType {
 }
 
 pub enum NamedEntity {
-    User(Weak<RwLock<User>>),
-    Chan(Weak<RwLock<Channel>>)
+    User(Weak<Mutex<User>>),
+    Chan(Weak<Mutex<Channel>>)
 }
 
 pub struct UserFlags {
@@ -141,44 +141,42 @@ pub struct Channel {
 }
 
 // when we want to do all this with concurrency,
-// we could wrap each HashMap in a RwLock, while the
+// we could wrap each HashMap in a Mutex, while the
 // Core itself will just have immutable borrows
 // when a hashmap has been used to obtain a User, Channel or Server,
-// again a RwLock wrapper will be needed, and used for as short a time
+// again a Mutex wrapper will be needed, and used for as short a time
 // as possible in every case
-// commands probably doesn't need a RwLock, it will be populated once,
+// commands probably doesn't need a Mutex, it will be populated once,
 // then remain the same
 // do we also need to wrap these in Arc<T> pointers? :/
 // maybe it's possible just to have the Core in an Arc<T>,
 // and give each thread a pointer to the core?
 pub struct Core {
-    // NamedEntity has Weak<RwLock<User/Chan>> inside                   // maps client IDs to clients
-    pub namespace: Arc<RwLock<HashMap<String, NamedEntity>>>,
-    pub clients: Arc<RwLock<HashMap<u64, Weak<RwLock<Client>>>>>,                    // maps client IDs to clients
-    pub users: Arc<RwLock<HashMap<String, Weak<RwLock<User>>>>>,          // maps user IDs to users
-    pub channels: Arc<RwLock<HashMap<String, Weak<RwLock<Channel>>>>>, // maps channames to Channel data structures
-    pub id_counter: Arc<RwLock<u64>>,
-    //pub servers: Arc<RwLock<HashMap<u64, Arc<RwLock<Server>>>>>,      // maps server IDs to servers
+    // NamedEntity has Weak<Mutex<User/Chan>> inside                   // maps client IDs to clients
+    pub namespace: Arc<Mutex<HashMap<String, NamedEntity>>>,
+    pub clients: Arc<Mutex<HashMap<u64, Weak<Mutex<Client>>>>>,                    // maps client IDs to clients
+    pub users: Arc<Mutex<HashMap<String, Weak<Mutex<User>>>>>,          // maps user IDs to users
+    pub channels: Arc<Mutex<HashMap<String, Weak<Mutex<Channel>>>>>, // maps channames to Channel data structures
+    pub id_counter: Arc<Mutex<u64>>,
+    //pub servers: Arc<Mutex<HashMap<u64, Arc<Mutex<Server>>>>>,      // maps server IDs to servers
 }
 
 // init hash tables
 // let's have this copyable, so whatever thread is doing stuff,
 // needs to only mutex lock one hashmap at a time
 impl Core {
-    pub fn
-    new ()
-    -> Core {
+    pub fn new () -> Core {
         // initialize hash tables for clients, servers, commands
         // clones of the "irc Core" are passed as a field within
         // ClientFuture, but we can still have a client list within
         // irc::Core, as Client is a seperate element within ClientFuture,
         // so we still avoid cyclic refs
-        let clients = Arc::new(RwLock::new(HashMap::new()));
-        //let servers  = Arc::new(RwLock::new(HashMap::new()));
-        let users = Arc::new(RwLock::new(HashMap::new()));
-        let channels = Arc::new(RwLock::new(HashMap::new()));
-        let namespace = Arc::new(RwLock::new(HashMap::new()));
-        let id_counter = Arc::new(RwLock::new(1));
+        let clients = Arc::new(Mutex::new(HashMap::new()));
+        //let servers  = Arc::new(Mutex::new(HashMap::new()));
+        let users = Arc::new(Mutex::new(HashMap::new()));
+        let channels = Arc::new(Mutex::new(HashMap::new()));
+        let namespace = Arc::new(Mutex::new(HashMap::new()));
+        let id_counter = Arc::new(Mutex::new(1));
         Core {
             clients,
             channels,
@@ -190,20 +188,20 @@ impl Core {
     }
 }
 
-pub fn lookup_client (irc: &Core, id: &u64) -> Option<Weak<RwLock<Client>>> {
-    let clients_list = irc.clients.read().unwrap(); // no need to mutex lock
-    let client_ptr = clients_list.get(id).unwrap();
+pub fn lookup_client (irc: &Core, id: &u64) -> Option<Weak<Mutex<Client>>> {
+    // NOTICE: lossy behaviour when lock fails - calling
+    // function will assume lookup failed
+    // gonna mark all these with NOTICE_LOSSY
+    let clients_list = irc.clients.try_lock().unwrap()
+        .or_else(|_| { None });
+    let client_ptr = clients_list.get(id).unwrap()
+        .or_else(|_| { None });
     Some(Weak::clone(client_ptr))
 }
 
-pub fn
-lookup_name
-(irc: &Core, name: &str)
--> Option<NamedEntity> {
-    let name_hashmap = irc.namespace.read().unwrap();
-    let enum_ot = name_hashmap.get(name);
-    // just realised I need to be cloning this
-    match &enum_ot {
+pub fn lookup_name (irc: &Core, name: &str) -> Option<NamedEntity> {
+    match irc.namespace.try_lock().unwrap()
+        .or_else(|_| { None }) { // NOTICE_LOSSY
         Some(NamedEntity::User(user_ptr)) =>
             Some(NamedEntity::User(Weak::clone(&user_ptr))),
         Some(NamedEntity::Chan(chan_ptr)) =>
@@ -212,10 +210,7 @@ lookup_name
     }
 }
 
-pub fn
-register
-(irc: &Core, client: &Client, nick: String, username: String, real_name: String)
--> Option<ClientType> {
+pub fn register (irc: Arc<Mutex<Core>>, client: Arc<Mutex<Client>>, nick: String, username: String, real_name: String) -> Option<ClientType> {
     if let Ok(address) = client.socket.peer_addr() {
     // rdns to get the hostname, or assign a string to the host
         let host = if let Ok(h) = lookup_addr(&address.ip()) {
@@ -223,13 +218,14 @@ register
         } else {
             Host::HostAddr(address.ip())
         };
-        let user = Arc::new( RwLock::new (User {
+        println!("register user {}!{}@{}, Real name: {}", nick, username, create_host_string(host), real_name);
+        let user = Arc::new( Mutex::new (User {
                 id: client.id,
                 core: irc.clone(),
-                nick,
-                username,
-                real_name,
-                host,
+                nick: nick.clone(),
+                username: username.clone(),
+                real_name: realname.clone(),
+                host, // moves into struct here
                 channel_list: Vec::new(),
                 flags: UserFlags { registered: true }
             } ));
@@ -238,17 +234,13 @@ register
         // (not in terms of leaks anyway. Avoid circular references etc.
         // Core has strong pointers to everyone, but who has pointers
         // to Core?
-        // Just realised it seemed weird to use the User struct key
-        // when we still have a String in scope - probably still want
-        // to clone() it though, as it will have moved into the User struct
-        let mut hashmap = irc.namespace.write().unwrap();
-        let user_dref = user.read().unwrap();
-        let (nick, username, host, real_name)
-            = (&user_dref.nick, &user_dref.username, &user_dref.host, &user_dref.real_name);
-        hashmap.insert(nick.clone(), NamedEntity::User(Arc::downgrade((&user))));
-        println!("registered user {}!{}@{}, Real name: {}", nick, username, create_host_string(host), real_name);
+
+        // NOTICE_BLOCKY - even worse than lossy, but currently unsure
+        // how to handle it properly if we fail to acquire the lock...
+        irc.lock().unwrap().namespace
+            .insert(nick.clone(), NamedEntity::User(Arc::downgrade((&user))));
         println!("new User has strong-count {} and weak-count {}", Arc::strong_count(&user), Arc::weak_count(&user));
-        println!("irc core/namespace has strong-count {} and weak-count  {}", Arc::strong_count(&user_dref.core.namespace), Arc::weak_count(&user_dref.core.namespace));
+        println!("irc core/namespace has strong-count {} and weak-count {}", Arc::strong_count(&irc.namespace), Arc::weak_count(&irc.namespace));
         Some(ClientType::User(Arc::clone(&user)))
     } else {
         None
@@ -264,8 +256,8 @@ user_command
 {
     // we're matching a String to some &str literals, so may need this &
     match &params.command[..] {
-        "PRIVMSG" => msg(irc, &mut user, params, MsgType::PrivateMsg),
-        "NOTICE" => msg(irc, &mut user, params, MsgType::Notice),
+        "PRIVMSG" => msg(irc, client, params, MsgType::PrivateMsg),
+        "NOTICE" => msg(irc, client, params, MsgType::Notice),
         //"JOIN" => self.join_channel(&mut user, params),
         _ => {
             let client_ptr = lookup_client(irc, &user.id).unwrap();
@@ -281,22 +273,31 @@ user_command
 // will redirect to the specific command handler
 pub fn
 command
-(irc: &mut Core, mut client: &mut Client, params: ParsedMsg)
+(irc: Arc<Mutex<Core>, client: Arc<Mutex<Client>>, params: ParsedMsg)
+    -> Vec<String>
 {
+    let client_t = client.try_lock().unwrap()
+        .or_else(|_|
+                 { ret = Vec::new(); ret.push(String::from("mutex error")); ret })
+        .client_type.clone();   // NOTICE_LOSSY
+    // also I think we want to clone it as the enum can contain an Arc,
+    // and rather than move client type outside of the client struct,
+    // we need to instead make Arc clones
     // we're matching a String to some &str literals, so may need this &
+    // after calling whatever command function, we don't use irc again,
+    // so I think just moving the Arc is fine, don't have to clone
     match &params.command[..] {
-        "NICK" => nick(irc, &mut client, params), // <-- will the borrow checker hate me for this? no,
-        "USER" => user(irc, &mut client, params),  //     since it's immutable and passed-ownership, borrow-happy
-        _ => match &client.client_type {
-            ClientType::User(user_ptr) =>
-            user_command(irc, &mut user_ptr.write().unwrap(), params),
-            _ => client.send_line("please register")
-        }
-    };
+        "NICK" => nick(irc, client_t, params), // <-- will the borrow checker hate me for this? no,
+        "USER" => user(irc, client_t, params),  //     since it's immutable and passed-ownership, borrow-happy
+        "PRIVMSG" => msg(irc, client_t, params, MsgType::PrivateMsg),
+        "NOTICE" => msg(irc, client_t, params, MsgType::Notice),
+        _ => { ret = Vec::new(); ret.push(String::from("unknown command"); ret }
+    }
 }
 
 pub fn msg
 (irc: &Core, my_user: &mut User, params: ParsedMsg, msg_type: MsgType)
+    -> Vec<String>
 {
     println!("got a message command");
     let mut responses: Vec<String> = Vec::new();
@@ -379,7 +380,7 @@ user(irc: &Core, mut client: &mut Client, params: ParsedMsg)
             ClientType::Unregistered => {
                 // initiate handshake
                 (   Some(String::from("HELLO! welcome to IRC, new user")),
-                    Some(ClientType::ProtoUser(Arc::new(RwLock::new(ProtoUser {
+                    Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
                         nick: None,
                         username: Some(username),
                         real_name: Some(real_name)})))),
@@ -453,7 +454,7 @@ pub fn nick(irc: &Core, mut client: &mut Client, params: ParsedMsg) {
         let (message_o, new_type_o, died) = match &client.client_type {
             ClientType::Unregistered => { // in this case we need to create a "proto user"
                 (   Some(String::from("created a proto user thingy :o")),
-                    Some(ClientType::ProtoUser(Arc::new(RwLock::new(ProtoUser {
+                    Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
                         nick: Some(nick),
                         username: None,
                         real_name: None })))),
@@ -474,7 +475,7 @@ pub fn nick(irc: &Core, mut client: &mut Client, params: ParsedMsg) {
                 // twice without any user command
                 if let Some(_) = &proto_user.nick {
                     (   Some(String::from("you need to send USER to complete registration")),
-                        Some(ClientType::ProtoUser(Arc::new(RwLock::new(ProtoUser {
+                        Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
                             nick: Some(nick),
                             username: None,
                             real_name: None })))),
