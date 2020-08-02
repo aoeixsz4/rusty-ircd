@@ -44,6 +44,17 @@ pub struct ParsedMsg {
     pub opt_params: Option<Vec<String>>
 }
 
+pub fn err_to_msg (err: ParseError) -> String {
+    String::from(match err {
+        ParseError::InvalidPrefix => "invalid prefix!",
+        ParseError::NoCommand => "no command given!",
+        ParseError::InvalidCommand => "invalid command!",
+        ParseError::InvalidNick => "invalid nick!",
+        ParseError::InvalidUser => "invalid user!",
+        ParseError::InvalidHost => "invalid host!"
+    })
+}
+
 // parsing IRC messages :)
 // we want to use mostly &str operations for the parsing itself,
 // but we don't want to have to care about the fate of message,
