@@ -112,6 +112,16 @@ impl MessageBuffer {
         index
     }
 
+    pub fn append_ln(&mut self, line: &str) -> Result<(), BufferError> {
+        // how much space is left in the buffer?
+        // does it make sense to try a partial write?
+        if line.len() + 2 > (rfc::MAX_MSG_SIZE - self.index) {
+            return Err(BufferError::Overflow);
+        }
+        if let Err(e) = self.append_str(line) { return Err(e); }
+        append_str("\r\n")
+    }
+
     // we also want code for appending to these buffers, more for server-> client writes
     // this can fail if the buffer doesn't have room for our message (probably indicates a connection problem)
     // for client buffers we're reading, this might be called by the incoming socket data event handler
