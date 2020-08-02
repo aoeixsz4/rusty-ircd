@@ -7,11 +7,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Weak, Mutex};
 use std::collections::HashMap;
 use std::clone::Clone;
+use dns_lookup::lookup_addr;
+use tokio::net::TcpStream;
 use crate::client;
 use crate::client::{Client,ClientType};
 use crate::parser::ParsedMsg;
-use dns_lookup::lookup_addr;
-use tokio::net::TcpStream;
 
 // I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
 // main difference is the parser's variants only contain strings (either for hostname
@@ -301,60 +301,45 @@ pub fn msg
 {
     println!("got a message command");
     let mut responses: Vec<String> = Vec::new();
-    if let Some(args) = params.opt_params {
-        if args.len() < 2 {
-            return;
-        }
-        // if there are more than two arguments,
-        // concatenate the remainder to one string
-        let end_index = args.len();
-        println!("target is {} and content is {}", args[0], args[1]);
-        let recipient_string = args[0].clone();
-        let msg_vec_slice = &args[1 .. end_index];
-        let message = msg_vec_slice.join(" ");
-        println!("processed message = {}", message);
-        // loop over targets
-        let split: Vec<&str> = recipient_string.split(',').collect();
-        for target_str in split.iter() {
-            let result = match lookup_name(irc, &target_str) {
-                Some(target) => match target {
-                    NamedEntity::User(user_ptr) => {
-                        println!("found a user target! nickname: {}", target_str);
-                        let user_arc = Weak::upgrade(&user_ptr).unwrap();
-                        let user_ro = user_arc.read().unwrap();
-                        let client_maybe = lookup_client(irc, &user_ro.id);
-                        if let Some(client_ptr) = client_maybe {
-                            let client_arc = Weak::upgrade(&client_ptr).unwrap();
-                            let mut client = client_arc.write().unwrap();
-                            client.send_line(&message);
-                        }
-                        None
-                    }
-                    NamedEntity::Chan(chan_ptr) => {
-                        None
-                    }
-                },
-                None => Some(String::from("No such nick/channel"))
-            };
-            if let Some(reply) = result {
-                responses.push(String::from(&reply))
-            }
+    // if there are more than two arguments,
+    // concatenate the remainder to one string
+    let args_iter = params.opt_params.iter();
+    let target_str = match args_iter.next() {
+        Some(arg) => arg,
+        None => {
+            // probably wanna make an enum of all these
+            reponses.push(String::from("411 ERR_NORECIPIENT"));
+            return responses;
         }
     }
+    let message = args_iter.collect::<Vec<String>>().join(" ");
+    // if there were no more args, message should be an empty String
+    if message.len() == 0 {
+        responses.push(String::from("412 ERR_NOTEXTTOSEND"));
+        return;
+    }
+    println!("target is {} and content is {}", target_str, message);
+    // loop over targets
+    for target in target_str.split(',') {
+        match lookup_name(irc, &target) {
+            None =>
+                responses.push(String::from("401 ERR_NOSUCHNICK")),
+            NamedEntity::User(user_ptr) => {
+                // NOTICE_BLOCKY
+                if let Err(msg) = user_ptr.upgrade().unwrap()
+                    .lock().unwrap().send_msg(&message) {
+                        responses.push(msg);
+                }
+            },
+            NamedEntity::Chan(_chan_ptr) => () // not implemented chans yet
+        }
+    }
+
     // according to the RFC server should never respond to
     // NOTICE messages, no matter how they fail
     match msg_type {
-        MsgType::PrivateMsg => {
-            let client_option = lookup_client(irc, &my_user.id);
-            if let Some(pointer) = client_option {
-                let arc_pointer = Weak::upgrade(&pointer).unwrap();
-                let mut rw_pointer = arc_pointer.write().unwrap();
-                for response in responses.iter() {
-                    rw_pointer.send_line(&response);
-                }
-            }
-        },
-        MsgType::Notice => return
+        MsgType::PrivateMsg => responses,
+        MsgType::Notice => Vec::new()
     }
 }
 

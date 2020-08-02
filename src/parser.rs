@@ -39,9 +39,8 @@ pub struct ParsedMsg {
     pub command: String,
     // NB: our parser first makes a Vec<&str>, where things will still point to stuff
     // in whatever the message slice sent to parse_message() was given a borrow of
-    // params could also be a &[String], or an explicit array of 15 Strings,
-    // but in the former case who owns the String array borrowed from?
-    pub opt_params: Option<Vec<String>>
+    // why wrap a Vec with Option when you can just check whether it's empty?
+    pub opt_params: Vec<String>
 }
 
 pub fn err_to_msg (err: ParseError) -> String {
@@ -107,7 +106,7 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
                 return Ok(ParsedMsg {
                     opt_prefix,
                     command: command.to_uppercase(), // this will make irc::handle_command() have an easier time
-                    opt_params: None
+                    opt_params: Vec::new()
                 });
             }
         }
@@ -147,7 +146,7 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
     Ok(ParsedMsg {
         opt_prefix,
         command,
-        opt_params: Some(params)
+        opt_params: params
     })
 }
 
