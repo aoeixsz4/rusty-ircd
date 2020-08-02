@@ -9,7 +9,7 @@ use crate::irc;
 use crate::parser;
 use parser::ParseError;
 
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::net::SocketAddr;
 use std::io::{Error, ErrorKind};
 use std::collections::HashMap;
@@ -51,7 +51,7 @@ impl ClientFuture {
     // call when client connection drops (either in error or if eof is received)
     // remove client from list on EOF or connection error
     fn unlink_client(&mut self) {
-        let mut client_list = self.irc_core.clients.write().unwrap();
+        let mut client_list = self.irc_core.clients.lock().unwrap();
         // HashMap::remove() returns an Option<T>, so we can either
         // ignore the possibility that the client is alread unlinked, or deliberately panic
         // (since if this fails, there may well be a bug elsewhere
@@ -77,7 +77,7 @@ impl ClientFuture {
         let mut write_count: usize = 0;
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
 
-        let client = Arc::clone(&self.client).read().unwrap();
+        let client = Arc::clone(&self.client).lock().unwrap();
         let len = client.output.copy(&mut tmp_buf); // returns bytes copied
 
         // write as much as we can while just incrementing indices
@@ -89,7 +89,7 @@ impl ClientFuture {
             }
         }
 
-        // if write_count > 0, get mutex again and shift bytes
+        // if write_count > 0, shift bytes
         // (or just reset index if write_count == index
         if write_count > 0 {
             if write_count == client.output.index {
@@ -141,7 +141,7 @@ impl ClientFuture {
             }
             
             let target_ptr = Weak::upgrade(target).unwrap();
-            let mut target_wl = target_ptr.write().unwrap();
+            let mut target_wl = target_ptr.lock().unwrap();
 
 
             // send_line() takes care of notifying the Future's task and flags
@@ -160,7 +160,7 @@ impl Future for ClientFuture {
         {
             // make a mini-scope to minimise locks on client
             let client_arc = Arc::clone(&self.client);
-            let client_ro = client_arc.read().unwrap();
+            let client_ro = client_arc.lock().unwrap();
             // is connection/client dead? drop from list and return Ready to complete our future
             if client_ro.dead == true {
                 self.unlink_client(&client_ro);
@@ -172,7 +172,7 @@ impl Future for ClientFuture {
         if self.first_poll == true {
             self.first_poll = false;
             let client_arc = Arc::clone(&self.client);
-            let client_rw = client_arc.write().unwrap();
+            let client_rw = client_arc.lock().unwrap();
             client_rw.handler = task::current();
         }
 
@@ -181,7 +181,7 @@ impl Future for ClientFuture {
         {
             // make a mini-scope to minimise locks on client
             let client_arc = Arc::clone(&self.client);
-            let client_ro = client_arc.read().unwrap();
+            let client_ro = client_arc.lock().unwrap();
 	        if let Err(_e) = self.try_flush() {
                 self.unlink_client();
                 return Ok(Async::Ready(()));
@@ -197,7 +197,7 @@ impl Future for ClientFuture {
         {
             // make a mini-scope to minimise locks on client
             let client_arc = Arc::clone(&self.client);
-            let client_ro = client_arc.read().unwrap();
+            let client_ro = client_arc.lock().unwrap();
             // loop while client's input buffer contains line delimiters
             while client_ro.input.has_delim() {
                 let msg_string = client_ro.input.extract_ln();
