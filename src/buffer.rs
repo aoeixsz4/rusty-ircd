@@ -52,21 +52,21 @@ impl MessageBuffer {
         // there's no need to copy everything to the very end of the buffer,
         // if it hasn't been completely filled
         for i in 0 .. len {
-            buffer[dest_i + i] = buffer[src_i + i];
+            self.buffer[dest_i + i] = self.buffer[src_i + i];
         }
-        index = dest_i + len;
+        self.index = dest_i + len;
     }
 
     pub fn shift_bytes_to_start (&mut self, src_i: usize) {
-        self.shift_bytes(src_i, 0, index - src_i);
+        self.shift_bytes(src_i, 0, self.index - src_i);
     }
     
     fn get_eol (&self) -> Option<usize> {
-        if index < 2 {
+        if self.index < 2 {
             return None;
         }
-        for i in 0..index - 1 {
-            if buffer[i] == ('\r' as u8) && buffer[i + 1] == ('\n' as u8) {
+        for i in 0..self.index - 1 {
+            if self.buffer[i] == ('\r' as u8) && self.buffer[i + 1] == ('\n' as u8) {
                 return Some(i);
             }
         }
@@ -102,10 +102,10 @@ impl MessageBuffer {
 
     // need a pub fn to copy our private buffer to some external &mut borrowed buffer
     pub fn copy(&self, copy_buf: &mut [u8]) -> usize {
-        for i in 0 .. index {
-            copy_buf[i] = buffer[i];
+        for i in 0 .. self.index {
+            copy_buf[i] = self.buffer[i];
         }
-        index
+        self.index
     }
 
     pub fn append_ln(&mut self, line: &str) -> Result<(), BufferError> {
@@ -115,7 +115,7 @@ impl MessageBuffer {
             return Err(BufferError::Overflow);
         }
         if let Err(e) = self.append_str(line) { return Err(e); }
-        append_str("\r\n")
+        self.append_str("\r\n")
     }
 
     // we also want code for appending to these buffers, more for server-> client writes
@@ -128,8 +128,8 @@ impl MessageBuffer {
             return Err(BufferError::Overflow);
         }
         for &byte in message_string.as_bytes() {
-            buffer[index] = byte;
-            index += 1;
+            self.buffer[self.index] = byte;
+            self.index += 1;
         }
         return Ok(()); // returning Ok(current_index) as an output might be an option
     }
@@ -139,9 +139,9 @@ impl MessageBuffer {
             return Err(BufferError::Overflow);
         }
         for i in 0 .. buf.len() {
-            buffer[self.index + i] = buf[i];
+            self.buffer[self.index + i] = buf[i];
         }
-        index += buf.len();
+        self.index += buf.len();
         Ok(())
     }
 

@@ -6,7 +6,7 @@ mod buffer;
 mod client;
 mod parser;
 
-use std::sync::{Arc, Weak, RwLock};
+use std::sync::{Arc, Weak, Mutex};
 use std::net::SocketAddr;
 use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
@@ -30,7 +30,7 @@ fn process_socket(sock: TcpStream, irc_core: Core) -> ClientFuture {
     let id_arc = Arc::clone(&irc_core.id_counter);
     let mut id = id_arc.write().unwrap();
     let client = {
-        let client = Arc::new(RwLock::new(Client::new(*id, task::current(), sock)));
+        let client = Arc::new(Mutex::new(Client::new(*id, task::current(), sock)));
         // actual hashmap is inside ClientList struct
         let mut clients = irc_core.clients.write().unwrap();
         clients.insert(*id, Arc::downgrade(&client));
