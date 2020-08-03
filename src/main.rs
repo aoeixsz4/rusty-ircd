@@ -54,8 +54,8 @@ fn process_socket(sock: TcpStream, irc_core: Core) -> ClientFuture {
     }
 }
         
-
-fn main() {
+#[tokio::main]
+pub fn async main() {
     let addr = "127.0.0.1:6667".parse::<SocketAddr>().unwrap();
     // Ups, this will just try to connect to above address,
     // we want to bind to it

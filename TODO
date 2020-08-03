@@ -1,4 +1,3 @@
- o create command handler with match block and individual command functions
- o begin implementing necessary commands for login handshake:
-   (PASS) followed by NICK and USER for clients or PASS followed by SERVICE for services
-   initial implementation will be limited to NICK and USER for client connections
+ o compile, test and run code
+ o switch to tokio 0.2
+ o get message relaying working again
