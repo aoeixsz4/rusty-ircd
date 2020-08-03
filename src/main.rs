@@ -28,11 +28,11 @@ fn process_socket(sock: TcpStream, irc_core: Core) -> ClientFuture {
     // and not have borrowing/moving problems, I think
     // also remember to clone a reference
     let id_arc = Arc::clone(&irc_core.id_counter);
-    let mut id = id_arc.write().unwrap();
+    let mut id = id_arc.lock().unwrap(); // NOTICE_BLOCKY
     let client = {
         let client = Arc::new(Mutex::new(Client::new(*id, task::current(), sock)));
         // actual hashmap is inside ClientList struct
-        let mut clients = irc_core.clients.write().unwrap();
+        let mut clients = irc_core.clients.lock().unwrap(); // NOTICE_BLOCKY
         clients.insert(*id, Arc::downgrade(&client));
 
         // increment id value, this will only ever go up, integer overflow will wreak havoc,
