@@ -41,10 +41,7 @@ impl ClientFuture {
         // bytes to the start of the buffer every time a write completes
         
         // try to get a lock on the client, non-blocking style
-        let mut client;
-        if let Ok(guard) = self.client.try_lock() {
-            client = guard;
-        } else { return Ok(Async::NotReady); }
+        let mut client = self.client.lock().unwrap();
 
         let mut write_count: usize = 0;
         let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
@@ -64,7 +61,7 @@ impl ClientFuture {
         if write_count > 0 {
             if write_count == client.output.index {
                 client.output.index = 0;
-            } else {
+            
                 client.output.shift_bytes_to_start(write_count);
             }
         }
@@ -80,10 +77,7 @@ impl ClientFuture {
         let mut tmp_index: usize = 0;
 
         // try (non-blocking) to get lock on the client
-        let mut client;
-        if let Ok(guard) = self.client.try_lock() {
-            client = guard;
-        } else { return Ok(Async::NotReady); }
+        let mut client = self.client.lock().unwrap();
 
         while tmp_index < rfc::MAX_MSG_SIZE { // loop until there's nothing to read or the buffer's full
             match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
@@ -124,17 +118,11 @@ impl ClientFuture {
         // we should probably notify the irc core code to do something
         // about a dropped client, but most of the memory stuff will
         // be dealt with purely by ClientFuture leaving scope
-        if let Ok(client_list) = self.irc_clore.clients.try_lock() {
-            if let None = client_list.remove(&self.id) {
-                panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
-            }
-        }
-        // regardless of whether or not the hashmap update worked,
-        // this ClientFuture returns ready now, finished!
-        // NOTICE_LEAKY --
-        //  wait no, not leaky. HashMap only contains Weak refs to
-        //  the User structure, Client had an Arc ref but Client
-        //  should drop when we do. I think it's fine.
+
+        // NOTICE_BLOCKY - however, tokio recommend using normal,
+        // blocking mutexes unless you need to hold locks across
+        // .await calls, so maybe this is fine
+        self.irc_core.clients.lock().unwrap().remove(&self.id);
     }
 }
 
@@ -144,61 +132,47 @@ impl Future for ClientFuture {
     // this here is the main thing
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // is connection/client dead? drop from list and return Ready to complete our future
-        if let Ok(client) = self.client.try_lock() {
-            if self.first_poll == true {
-                self.first_poll = false;
-                client.set_handler(task::current);
-            }
-            if client.is_dead() {
-                self.unlink_client();
-                return Ok(Async::Ready);
-            }
-        } else {
-            return Ok(Async::NotReady),
+        if self.client.lock().unwrap().is_dead() {
+            self.unlink_client();
+            return Ok(Async::Ready(()));
+        }
+
+        if self.first_poll == true {
+            self.first_poll = false;
+            self.client.lock().unwrap().set_handler(task::current());
         }
 
         // try to write if there is anything in outbuf,
         // returns error if there is a connection problem, in which case drop the client
 	    if let Err(_e) = self.try_flush() {
             self.unlink_client();
-            return Ok(Async::Ready);
+            return Ok(Async::Ready(()));
         }
 
         // try to read into our client's in-buffer
         if let Err(_e) = self.try_read() {
             self.unlink_client();
-            return Ok(Async::Ready);
+            return Ok(Async::Ready(()));
         }
 
         // loop while client's input buffer contains line delimiters
         loop {
             // by using the scope trick like this we don't keep
             // the mutex lock after assigning to line
-            let try_line = if let Ok(client) = self.client.try_lock() {
-                client.try_get_line()
-            };
+            let try_line = self.client.lock().unwrap().try_get_line();
 
             if let Some(message) = try_line {
                 let responses = match parser::parse_message(&message) {
-                    Ok(msg) => irc::command(Arc::clone(&self.irc_core), Arc::clone(&self.client), msg),
+                    Ok(msg) => irc::command(self.irc_core.clone(), Arc::clone(&self.client), msg),
                     Err(parse_err) => {
                         let resp = Vec::new();
                         resp.push(parser::err_to_msg(parse_err));
                         resp
                     }
-                }
+                };
 
                 for response in responses {
-                    /* NOTICE: lossy behaviour on error, if
-                       the lock *does* fail, responses meant
-                       for the client will be dropped, so
-                       we may want to consider a way to spawn
-                       ClientSend Futures... */
-                    if let Ok(client) = self.client.try_lock() {
-                        client.send_line(response);
-                    } else {
-                        break;
-                    }
+                    self.client.lock().unwrap().send_line(&response);
                 }
             } else {
                 break;
@@ -214,6 +188,18 @@ pub enum ClientType {
     User(Arc<Mutex<irc::User>>),
     //Server(Arc<Mutex<irc::Server>>), leave serv implmentation for much later
     ProtoUser(Arc<Mutex<irc::ProtoUser>>)
+}
+
+impl Clone for ClientType {
+    fn clone (&self) -> Self {
+        match self {
+            ClientType::Unregistered => ClientType::Unregistered,
+            ClientType::User(user_ptr) =>
+                ClientType::User(Arc::clone(user_ptr)),
+            ClientType::ProtoUser(proto_user_ptr) =>
+                ClientType::ProtoUser(Arc::clone(proto_user_ptr))
+        }
+    }
 }
 
 pub struct Client { // is it weird/wrong to have an object with the same name as the module?
@@ -254,13 +240,17 @@ impl Client {
         }
     }
 
+    pub fn set_handler(&mut self, task: Task) {
+        self.handler = task;
+    }
+
     // fn sends a line to the client - this function adds the cr-lf delimiter,
     // so just an undelimited line should be passed as a &str
     // the function also notifies the runtime that the socket handler needs
     // to be polled to flush the write
     pub fn send_line(&mut self, line: &str) {
         self.handler.notify();
-        if let Err(_e) = self.output.append_ln(&string) {
+        if let Err(_e) = self.output.append_ln(&line) {
             self.dead = true;
         }
     }
