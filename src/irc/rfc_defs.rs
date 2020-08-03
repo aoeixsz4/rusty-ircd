@@ -1,7 +1,6 @@
 // rfc_defs
 // contains various checks to make sure e.g. nick, user, hostnames,
 // and other strings are composed of valid characters
-use std::env;
 
 pub const MAX_MSG_SIZE: usize = 512;
 pub const MAX_MSG_PARAMS: usize = 15; // including tailing, but not including COMMAND
