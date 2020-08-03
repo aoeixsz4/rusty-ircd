@@ -1,75 +1,46 @@
+extern crate dns_lookup;
 extern crate tokio;
-extern crate futures;
 #[macro_use]
-mod irc;
-mod buffer;
-mod client;
-mod parser;
-
-use std::sync::{Arc, Weak, Mutex};
-use std::net::SocketAddr;
-use std::collections::HashMap;
+pub mod irc;
+pub mod client;
+pub mod parser;
+use crate::client::{run_write_task, run_client_handler, Host};
+use crate::irc::Core;
+use dns_lookup::lookup_addr;
+use std::io::Error as ioError;
+use std::sync::Arc;
+use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
-use crate::buffer::MessageBuffer;
-use crate::client::{Client, ClientFuture};
-use crate::irc::{Core, NamedEntity};
-use futures::{task, Stream};
+use tokio::sync::mpsc;
+use tokio::task;
 
-// will want to at some point merge this with existing client and messagebuffer code in client.rs
-// and buffer.rs
-
-fn process_socket(sock: TcpStream, irc_core: Core) -> ClientFuture {
-    // borrow checker complains about mutex locked clients
-    // borrowing stuff when a move happens
-    // so we can deliberately descope it before that
-    // scope id here to use later
-    //
-    // need a proper Arc copy in order to write to this
-    // and not have borrowing/moving problems, I think
-    // also remember to clone a reference
-    let id_arc = Arc::clone(&irc_core.id_counter);
-    let mut id = id_arc.lock().unwrap(); // NOTICE_BLOCKY
-    let client = {
-        let client = Arc::new(Mutex::new(Client::new(*id, task::current(), sock)));
-        // actual hashmap is inside ClientList struct
-        let mut clients = irc_core.clients.lock().unwrap(); // NOTICE_BLOCKY
-        clients.insert(*id, Arc::downgrade(&client));
-
-        // increment id value, this will only ever go up, integer overflow will wreak havoc,
-        // but i doubt we reach enough clients for this to happen - should
-        // be handled in any final release of code though, *just in case*
-        println!("client connected: id = {}", *id);
-        *id += 1;
-        client
-    }; // drop mutex locked clients list
-    //
-    // we can now return a future containing client data and a pointer to the client list,
-    // and we don't have any reference cycles
-    ClientFuture {
-        client,
-        // irc_core is already cloned in main()
-        irc_core,        // client_list is now within irc_core
-        id: *id,
-        first_poll: true
+fn get_host(ip_addr: IpAddr) -> Result<Host, ioError> {
+    match lookup_addr(&ip_addr) {
+        Ok(h) => Ok(Host::Hostname(h.to_string())),
+        Err(_) => Ok(Host::HostAddr(ip_addr)),
     }
 }
-        
 
-fn main() {
-    let addr = "127.0.0.1:6667".parse::<SocketAddr>().unwrap();
-    // Ups, this will just try to connect to above address,
-    // we want to bind to it
-    let listener = TcpListener::bind(&addr).unwrap();
-    let irc_core = Core::new();
-
-    let server = listener.incoming()
-        .map_err(|e| println!("failed to accept stream, error = {:?}", e))
-        .for_each(move |sock| {
-            // clone needs to happen before the function call, otherwise clients is moved into process_socket
-            // and then we don't get it back for the next iteration of the loop
-            tokio::spawn(process_socket(sock, irc_core.clone()))
-        });
-
-    tokio::run(server);
+async fn process_socket(sock: TcpStream, irc: Arc<Core>) -> Result<(), ioError> {
+    let id = irc.assign_id();
+    /* Two ? required, one unwraps/expects a potential JoinError, the second ?
+     * unwraps to give Host or an ioError - may need some additional error
+     * composition to deal with the possible JoinError... */
+    let ip_address = sock.peer_addr()?.ip();
+    let host = task::spawn_blocking(move|| get_host(ip_address)).await??;
+    let (tx, rx) = mpsc::channel(32);
+    let (read, write) = sock.into_split();
+    tokio::spawn(run_write_task(write, rx));
+    tokio::spawn(run_client_handler(id, host, Arc::clone(&irc), tx, read));
+    Ok(())
 }
 
+#[tokio::main]
+pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut listener = TcpListener::bind("127.0.0.1:6667").await?;
+    let irc_core = Core::new();
+    loop {
+        let (socket, _) = listener.accept().await?;
+        tokio::spawn(process_socket(socket, Arc::clone(&irc_core)));
+    }
+}
