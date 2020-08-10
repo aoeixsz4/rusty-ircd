@@ -1,5 +1,9 @@
 # rusty-ircd
-Goal is Rust implementation of an irc daemon.
+Goal is Rust implementation of an irc daemon. Primarily the project is a sandbox for the author to play with while learning Rust.
+
+However, the intention is not to fall prey to the notion that nobody will ever read/use this code.
+Therefore, efforts will be made to prioritise readable, maintainable code that is extensible and supports e.g. i18n.
+Indeed these will be valuable tools for the author to learn about, too.
 
 ## Branches
 ### main
