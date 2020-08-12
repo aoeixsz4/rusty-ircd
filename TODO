@@ -1,28 +1,5 @@
-NEW FIRST THING TO DO:
- ° write an async io program that binds to a port and accepts connections
-
-so far:
- ° the parsing engine is fairly complete
- ° bits and pieces of runtime data structuring have been mapped out, i.e.
-    ° client, user and server structs - hash tables with ids for each
-    ° what else?
- ° irc/rfc_defs.rs has a list of checks for nicks, chan names etc. conforming to spec
-
-to be done next:
- ° async IO model for sockets (tokio)
- ° implement appropriate callbacks for:
-    ° client connections
-    ° client writes
-    ° dropped connections
- ° be thread aware for all the above,
- ° then implement a thread pool for work handling
-
-to REALLY be done next:
- ° write a small async test program using tokio, with the following spec:
-    ° binds to a port
-    ° accepts incoming connections
-    ° monitors for incoming writes
-    ° relays all complete lines (CRLF terminated) to all other clients
-    ° no IRC message parsing (to begin with)
-
- o look at pest or nom for the message parsing
+ o compile, test and run code
+ o switch to tokio 0.2
+ o replace MessageBuffer with bytes::BytesMut
+ o also tokio::io::BufWriter for sending data
+ o get message relaying working again
