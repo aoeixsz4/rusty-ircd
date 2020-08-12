@@ -1,0 +1,27 @@
+/*
+    300 RPL_NONE
+    302 RPL_USERHOST ":[<reply>{<space><reply>}]"
+    303 RPL_ISON ":[<nick> {<space><nick>}]"
+    301 RPL_AWAY "<nick> :<away message>"
+    305 RPL_UNAWAY ":You are no longer marked as being away"
+    306 RPL_NOWAWAY ":You have been marked as being away"
+    311 RPL_WHOISUSER "<nick> <user> <host> * :<real name>"
+    312 RPL_WHOISSERVER "<nick> <server> :<server info>"
+    313 RPL_WHOISOPERATOR "<nick> :is an IRC operator"
+    317 RPL_WHOISIDLE "<nick> <integer> :seconds idle"
+    318 RPL_ENDOFWHOIS "<nick> :End of /WHOIS list"
+    319 RPL_WHOISCHANNELS "<nick> :{[@|+]<channel><space>}"
+    314 RPL_WHOWASUSER "<nick> <user> <host> * :<real name>"
+    369 RPL_ENDOFWHOWAS "<nick> :End of WHOWAS"
+    321 RPL_LISTSTART "Channel :Users  Name"
+    322 RPL_LIST "<channel> <# visible> :<topic>"
+    323 RPL_LISTEND ":End of /LIST"
+    324 RPL_CHANNELMODEIS "<channel> <mode> <mode params>"
+    331 RPL_NOTOPIC "<channel> :No topic is set"
+    332 RPL_TOPIC "<channel> :<topic>"
+    341 RPL_INVITING "<channel> <nick>"
+    342 RPL_SUMMONING "<user> :Summoning user to IRC"
+    351 RPL_VERSION "<version>.<debuglevel> <server> :<comments>"
+    352 RPL_WHOREPLY "<channel> <user> <host> <server> <nick> <H|G>[*][@|+] :<hopcount> <real name>"
+    seems to be some missing...
+*/

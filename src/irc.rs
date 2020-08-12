@@ -1,155 +1,353 @@
-// this module will contain protocol definitions
-// and core data types and handlers for IRC commands
-//use crate::parser;
-
+pub mod error;
 pub mod rfc_defs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::Mutex;
-use std::collections::HashMap;
 use crate::client;
+use crate::client::{Client, ClientType, Host};
+use crate::irc::error::Error as ircError;
+use crate::parser::ParsedMsg;
+use std::clone::Clone;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak};
 
-// I hope it doesnt get too confusing that parser.rs and irc.rs both have a 'Host' enum,
-// main difference is the parser's variants only contain strings (either for hostname
-// or ip address), the type here will contain a hostname string or a proper ip address type
-// from std::net
-pub enum Host {
-    Hostname(String),
-    HostAddr(IpAddr)
+#[derive(Debug)]
+pub enum NamedEntity {
+    User(Weak<User>), //Chan(Weak<Channel>)
 }
 
-pub enum Origin {
-    Server(Host),
-    User(String, Option<String>, Option<Host>)
+impl Clone for NamedEntity {
+    fn clone(&self) -> Self {
+        match self {
+            NamedEntity::User(ptr) => NamedEntity::User(Weak::clone(&ptr)),
+        }
+    }
 }
 
-// having to define and match these types here,
-// as well as matching the raw command strings in parser::parse_message()
-// feels somehow not quite right, but I haven't yet got a more elegant solution
-// maybe parser should just hand over an Option<String> containing the src/origin prefix,
-// followed by a vector reference of String args
-// but the construction of the enum / match case is still clumsy,
-// I want an elegant and fast way to go from a string literal to an enum...
-// even with a match to string literals, I think it makes more sense to
-// have the specific command cases handled here, and not have to change lots of things both
-// here and in parser() if we want to add/change how commands work
-pub enum Command {
-    Join(Vec<String>), // #channel
-    Part(Vec<String>, Option<String>), // #channel, part-message
-    Message(Vec<String>, String), // dest (user/#channel), message
-    Nick(String), // choose nickname
-    User(String, u32, String), // choose username (might need addition parameters)
-    Quit(Option<String>), // quit-message
-}
-
+#[derive(Debug)]
 pub struct UserFlags {
     registered: bool,
 }
 
-// of the above, Message(targets, conntent) is arguably the most important feature of an irc server
-// it's also emblematic of the way we need to think about structuring data and finding targets,
-// there are a few cases we need to consider
-// if target is a channel, we have to map that to a list of users JOINed to that channel,
-// this can be done with the Channel::users field, but to get to the Channel data struct,
-// we need a HashMap of channel names in order to locate that data
-// once we have converted our list of targets to a list of nicks, we need to check which of those
-// are local (connected as clients to our server), and which are remote - for those 
-// which are remote, we have to remove their names from the target list and substitute in a server,
-// so we need to know which server acts as a relay for each remote user
+#[derive(Debug)]
 pub struct User {
-    id: u64,                            // this acts as a unique identifier for the user
-    nick: String,
-    username: String,
-    real_name: String,
-    host: Host,
-    channel_list: Vec<String>,
-    flags: UserFlags,
-    remote: bool,                       // if true, client_id is a server, otherwise it is the user
-    client_id: u64
-}
-
-pub struct ServerUserFlags {
-    server_op: bool
-}
-
-pub struct ServerUser {
-    nick: String,
-    flags: ServerUserFlags
-}
-
-// client may need to be mutable, and probably needs some sort of lifetime parameter
-// this is OK as long as the Client is not borrowed anywhere else
-// alternatively, we once again use an id as a place holder for a borrow,
-// and the core contains a hashmap of client IDs
-pub struct Server {
     id: u64,
+    nick: Mutex<String>,
+    username: String,
+    real_name: Mutex<String>,
     host: Host,
-    users: Vec<ServerUser>,
-    client_id: u64             // need to map 'server' to socketed client
+    /*channel_list: Vec<Weak<Channel>>,*/
+    flags: Mutex<UserFlags>,
+    irc: Arc<Core>,
+    client: Weak<Client>,
 }
 
-//pub struct Message {
-//    pub content: Box<Command>,// commands and their parameters are defined as an enum above
-//    pub origin: Option<Origin> // important when servers relay commands originating from their users
-//}
+impl User {
+    pub fn new(
+        id: u64,
+        irc: Arc<Core>,
+        nick: String,
+        username: String,
+        real_name: String,
+        host: client::Host,
+        client: &Arc<Client>,
+    ) -> Arc<Self> {
+        Arc::new(User {
+            id,
+            irc,
+            nick: Mutex::new(nick),
+            username,
+            real_name: Mutex::new(real_name),
+            host,
+            client: Arc::downgrade(client),
+            flags: Mutex::new(UserFlags { registered: true }), /*channel_list: Mutex::new(Vec::new())*/
+        })
+    }
 
-// flags related to user priveleges in a specific channel
-pub struct ChanUserFlags {
-    chan_op: bool,
-    chan_halfop: bool,
-    chan_voice: bool
+    pub fn set_nick(self: Arc<Self>, name: &str) -> Result<(), ircError> {
+        /* ? propagates the potential nick in use error */
+        self.irc.insert_name(name, NamedEntity::User(Arc::downgrade(&self)));
+        *self.nick.lock().unwrap() = name.to_string();
+        Ok(())
+    }
+
+    pub fn get_nick(self: Arc<Self>) -> String {
+        self.nick.lock().unwrap().clone()
+    }
+
+    pub async fn send_msg(self: Arc<Self>, src: Arc<User>, msg: &str) {
+        let my_client = self.client.upgrade().unwrap();
+        /* passing to an async fn and awaiting on it is gonna
+         * cause lifetime problems with a &str... */
+        my_client.send_line(msg).await;
+    }
 }
 
-pub struct ChanUser {
-    nick: String,
-    flags: ChanUserFlags
+#[derive(Debug)]
+pub struct ProtoUser {
+    nick: Option<String>,
+    username: Option<String>,
+    real_name: Option<String>,
 }
 
-// channel needs a name, a topic, and a list of joined users
-// this list can't just be a list of nicks, as additional flags are required: is the user an op on
-// the channel, for example?
-pub struct Channel {
-    name: String,
-    users: Vec<ChanUser>,
-    topic: String
-}
-
-// when we want to do all this with concurrency,
-// we could wrap each HashMap in a Mutex, while the
-// Core itself will just have immutable borrows
-// when a hashmap has been used to obtain a User, Channel or Server,
-// again a Mutex wrapper will be needed, and used for as short a time
-// as possible in every case
-// commands probably doesn't need a Mutex, it will be populated once,
-// then remain the same
-// do we also need to wrap these in Arc<T> pointers? :/
-// maybe it's possible just to have the Core in an Arc<T>,
-// and give each thread a pointer to the core?
+#[derive(Debug)]
 pub struct Core {
-    clients: Mutex<HashMap<u64, Mutex<client::Client>>>,// maps client IDs to clients
-    nicks: Mutex<HashMap<String, u64>>,                 // maps nicknames to unique ids
-    users: Mutex<HashMap<u64, Mutex<User>>>,            // maps user IDs to users
-    channels: Mutex<HashMap<String, Mutex<Channel>>>,   // maps channames to Channel data structures
-    servers: Mutex<HashMap<u64, Mutex<Server>>>,        // maps server IDs to servers
-    commands: HashMap<String, Command>                  // map of commands
+    namespace: Mutex<HashMap<String, NamedEntity>>,
+    clients: Mutex<HashMap<u64, Weak<Client>>>,
+    users: Mutex<HashMap<String, Weak<User>>>,
+    //channels: Mutex<HashMap<String, Weak<Channel>>>,
+    id_counter: Mutex<u64>, //servers: Mutex<HashMap<u64, Arc<Server>>>,
 }
 
-// init hash tables
 impl Core {
-    pub fn init () -> Core {
-        // initialize hash tables for clients, servers, commands
+    // init hash tables
+    pub fn new() -> Arc<Self> {
         let clients = Mutex::new(HashMap::new());
-        let nicks = Mutex::new(HashMap::new());
-        let mut commands = HashMap::new();
-        let servers  = Mutex::new(HashMap::new());
+        //let servers  = Mutex::new(HashMap::new());
         let users = Mutex::new(HashMap::new());
-        let channels = Mutex::new(HashMap::new());
-        Core {
+        //let channels = Mutex::new(HashMap::new());
+        let namespace = Mutex::new(HashMap::new());
+        let id_counter = Mutex::new(0);
+        Arc::new(Core {
             clients,
-            nicks,
-            commands,
-            channels,
+            //channels,
             users,
-            servers
+            namespace,
+            id_counter, //servers
+        })
+    }
+
+    pub fn assign_id(&self) -> u64 {
+        let mut lock_ptr = self.id_counter.lock().unwrap();
+        *lock_ptr += 1;
+        *lock_ptr
+    }
+
+    pub fn insert_client(&self, id: u64, client: Weak<Client>) {
+        self.clients
+            .lock()
+            .unwrap()
+            .insert(id, client);
+    }
+
+    pub fn insert_name(&self, name: &str, item: NamedEntity) -> Result<(), ircError> {
+        let mut hashmap = self.namespace.lock().unwrap();
+        if ! hashmap.contains_key(name) {
+            hashmap.insert(name.to_string(), item);
+            Ok(())
+        } else {
+            Err(self::error::ERR_NICKNAMEINUSE)
         }
     }
+
+    pub fn remove_name(&self, name: &str) -> Result<NamedEntity, ircError> {
+        let mut hashmap = self.namespace.lock().unwrap();
+        hashmap.remove(name).ok_or_else(||self::error::ERR_NOSUCHNICK)
+    }
+
+    pub fn get_client(&self, id: &u64) -> Option<Weak<Client>> {
+        self.clients
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|cli| Weak::clone(cli))
+    }
+
+    pub fn remove_client(&self, id: &u64) -> Option<Weak<Client>> {
+        self.clients.lock().unwrap().remove(id)
+    }
+
+    pub fn get_name(&self, name: &str) -> Result<NamedEntity, ircError> {
+        match self.namespace.lock().unwrap().get(name) {
+            Some(NamedEntity::User(user_ptr)) => Ok(NamedEntity::User(Weak::clone(&user_ptr))),
+            //Some(NamedEntity::Chan(chan_ptr)) =>
+            //  Some(NamedEntity::Chan(Weak::clone(&chan_ptr))),
+            None => Err(self::error::ERR_NOSUCHNICK)
+        }
+    }
+
+    pub fn register(
+        &self,
+        client: &Arc<Client>,
+        nick: String,
+        username: String,
+        real_name: String,
+    ) -> Arc<User> {
+        let host_str = client.get_host_string();
+        let host = client.get_host();
+        let id = client.get_id();
+        let irc = client.get_irc();
+        println!(
+            "register user {}!{}@{}, Real name: {}",
+            &nick, &username, &host_str, &real_name
+        );
+        let user = User::new(
+            id,
+            irc,
+            nick.to_string(),
+            username,
+            real_name.clone(),
+            host,
+            client,
+        );
+        self.insert_name(&nick, NamedEntity::User(Arc::downgrade(&user)));
+        user
+    }
+}
+
+pub async fn command(
+    irc: Arc<Core>,
+    client: Arc<Client>,
+    params: ParsedMsg,
+) -> Result<(), ircError> {
+    let registered = Arc::clone(&client).is_registered();
+
+    match &params.command[..] {
+        "NICK" => nick(&irc, client, params),
+        "USER" => user(&irc, client, params),
+        "PRIVMSG" if registered => {
+            Ok(msg(&irc, client.get_user(), params).await?)
+        },
+        "NOTICE" if registered =>
+        /* RFC states NOTICE messages don't get replies */
+        {
+            msg(&irc, client.get_user(), params).await; Ok(())
+        },
+        _ => Err(self::error::ERR_UNKNOWNCOMMAND),
+    }
+}
+
+pub async fn msg(irc: &Core, user: Arc<User>, mut params: ParsedMsg) -> Result<(), ircError> {
+    if params.opt_params.len() < 1 {
+        return Err(self::error::ERR_NORECIPIENT);
+    }
+    let targets = params.opt_params.remove(0);
+
+    // if there are more than two arguments,
+    // concatenate the remainder to one string
+    let message = params.opt_params.join(" ");
+    // if there were no more args, message should be an empty String
+    if message.len() == 0 {
+        return Err(self::error::ERR_NOTEXTTOSEND);
+    }
+    println!("target is {} and content is {}", targets, message);
+
+    // loop over targets
+    for target in targets.split(',') {
+        if let NamedEntity::User(user_weak) = irc.get_name(target)? {
+            Weak::upgrade(&user_weak).unwrap().send_msg(Arc::clone(&user), &message).await;
+        }
+    }
+    Ok(())
+}
+
+pub fn user(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
+    // a USER command should have exactly four parameters
+    // <username> <hostname> <servername> <realname>,
+    // though we ignore the middle two unless a server is
+    // forwarding the message
+    let args = params.opt_params;
+    if args.len() != 4 {
+        // strictly speaking this should be an RFC-compliant
+        // numeric error ERR_NEEDMOREPARAMS
+        return Err(self::error::ERR_NEEDMOREPARAMS);
+    }
+    let username = args[0].clone();
+    let real_name = args[3].clone();
+
+    // tuple Some(&str), Some(ClientType), bool died
+    let result = match client.get_client_type() {
+        ClientType::Unregistered => {
+            // initiate handshake
+            Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
+                nick: None,
+                username: Some(username),
+                real_name: Some(real_name),
+            }))))
+        }
+        ClientType::User(_user_ref) => {
+            // already registered! can't change username
+            return Err(self::error::ERR_ALREADYREGISTRED);
+        }
+        ClientType::ProtoUser(proto_user_ref) => {
+            // got nick already? if so, complete registration
+            let proto_user = proto_user_ref.lock().unwrap();
+            if let Some(nick) = &proto_user.nick {
+                // had nick already, complete registration
+                Some(ClientType::User(irc.register(
+                    &client,
+                    nick.clone(),
+                    username,
+                    real_name,
+                )))
+            // there probably is some message we're meant to
+            // return to the client to confirm successful
+            // registration...
+            } else {
+                // don't see an error in the irc file,
+                // except the one if you're already reg'd
+                // NOTICE_BLOCKY
+                proto_user_ref.lock().unwrap().username = Some(username);
+                proto_user_ref.lock().unwrap().real_name = Some(real_name);
+                None
+            }
+        } //ClientType::Server(_server_ref) => (None, None, false)
+    };
+
+    if let Some(new_client_type) = result {
+        client.set_client_type(new_client_type);
+    }
+    return Ok(());
+}
+
+pub fn nick(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
+    let nick;
+    if let Some(n) = params.opt_params.iter().next() {
+        nick = n.to_string();
+    } else {
+        return Err(self::error::ERR_NEEDMOREPARAMS);
+    }
+
+    // is this nick already taken?
+    if let Ok(_hit) = irc.get_name(&nick) {
+        return Err(self::error::ERR_NICKNAMEINUSE);
+    }
+
+    // we can return a tuple and send messages after the match
+    // to avoid borrowing mutably inside the immutable borrow
+    // (Some(&str), Some(ClientType), bool died)
+    let result = match client.get_client_type() {
+        ClientType::Unregistered => {
+            // in this case we need to create a "proto user"
+            Some(ClientType::ProtoUser(Arc::new(Mutex::new(ProtoUser {
+                nick: Some(nick),
+                username: None,
+                real_name: None,
+            }))))
+        }
+        ClientType::User(user_ref) => {
+            // just a nick change
+            user_ref.set_nick(&nick)?;
+            None
+        }
+        ClientType::ProtoUser(proto_user_ref) => {
+            // in this case we already got USER
+            let mut proto_user = proto_user_ref.lock().unwrap();
+            // need to account for the case where NICK is sent
+            // twice without any user command
+            if let Some(_) = proto_user.nick {
+                proto_user.nick = Some(nick);
+                None
+            } else {
+                // full registration! wooo
+                let username = proto_user.username.as_ref();
+                let real_name = proto_user.real_name.as_ref();
+                Some(ClientType::User(
+                    irc.register(&client, nick, username.unwrap().to_string(), real_name.unwrap().to_string()),
+                ))
+            }
+        }
+    };
+
+    if let Some(new_client_type) = result {
+        client.set_client_type(new_client_type);
+    }
+    return Ok(());
 }

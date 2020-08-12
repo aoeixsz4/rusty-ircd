@@ -1,247 +1,295 @@
-// client
-// this file contains futures, handlers and socket code for dealing with
-// async IO for connected clients
 extern crate tokio;
-extern crate futures;
+#[macro_use]
+use crate::irc::{self, Core, User};
+use crate::irc::error::Error as ircError;
+use crate::parser::{parse_message, ParseError};
+use std::error;
+use std::fmt;
+use std::io::Error as ioError;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::mpsc;
 
-use crate::buffer;
-use crate::irc;
-use crate::parser;
-
-use std::sync::{Mutex, Arc};
-use std::net::SocketAddr;
-use std::io::{Error, ErrorKind};
-use std::collections::HashMap;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncRead, AsyncWrite};
-use futures::{Future, Async, Poll, Stream};
-use futures::task;
-use futures::task::Task;
-use crate::buffer::MessageBuffer;
-use crate::irc::rfc_defs as rfc;
-
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-pub enum ClientCommand {
-    Empty
+/* There are 3 main types of errors we can have here...
+ * one is a parsing error, which should be covered by ParseError,
+ * another important type is any other IRC error associated to
+ * a particular command. There is a little overlap in the RFC
+ * with IRC and parsing errors, but in this program the distinction
+ * is what bit of code generates them.
+ * The third main type will be related to the client connection or
+ * system IO */
+#[derive(Debug)]
+pub enum GenError {
+    Io(ioError),
+    Parse(ParseError),
+    IRC(ircError),
 }
 
-// this future is a wrapper to the Client struct, and implements the polling code
-pub struct ClientFuture {
-    pub client: Arc<Mutex<Client>>,
-    pub client_list: Arc<Mutex<ClientList>>,
-    pub id: u32, // same as client id
-    pub first_poll: bool,
-}
-
-pub struct Client { // is it weird/wrong to have an object with the same name as the module?
-    // will need a hash table for joined channels
-    //channels: type unknown
-    socket: TcpStream,
-    //flags: some sort of enum vector?
-    //host: irc::Host,
-    id: u32,
-    input: MessageBuffer,
-    output: MessageBuffer,
-    handler: Task,
-    dead: bool // this will be flagged if poll() needs to remove the client
-}
-
-pub struct ClientList {
-    pub map: HashMap<u32, Arc<Mutex<Client>>>,
-    pub next_id: u32
-}
-
-impl ClientFuture {
-    // call when client connection drops (either in error or if eof is received)
-    // remove client from list on EOF or connection error
-    fn unlink_client(&mut self, client: &Client) {
-        let mut client_list = self.client_list.lock().unwrap();
-        // HashMap::remove() returns an Option<T>, so we can either
-        // ignore the possibility that the client is alread unlinked, or deliberately panic
-        // (since if this fails, there may well be a bug elsewhere
-        if let None = client_list.map.remove(&client.id) {
-            panic!("client {} doesn't exist in our list, there is likely a bug somewhere");
+impl fmt::Display for GenError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            GenError::Io(ref err) => write!(f, "IO Error: {}", err),
+            GenError::Parse(ref err) => write!(f, "Parse Error: {}", err),
+            GenError::IRC(ref err) => write!(f, "IRC Error: {}", err),
         }
     }
-    
-    // to be called from polling future
-    fn try_flush(&mut self, client: &mut Client) -> Result<usize, Error> {
-        // now we also have the slightly annoying situation that if bytes_out < out_i,
-        // we have to either do someething complicated with two indices, or shift
-        // bytes to the start of the buffer every time a write completes
-        let mut write_count: usize = 0;
-        let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
+}
 
-        // create a special scope where we use the Arc<Mutex<>> wrapper to copy stuff into 
-        // our temporary write buffer
-        let len = client.output.copy(&mut tmp_buf); // returns bytes copied
+impl error::Error for GenError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match *self {
+            // N.B. Both of these implicitly cast `err` from their concrete
+            // types (either `&io::Error` or `&num::ParseIntError`)
+            // to a trait object `&Error`. This works because both error types
+            // implement `Error`.
+            GenError::Io(ref err) => Some(err),
+            GenError::Parse(ref err) => Some(err),
+            GenError::IRC(ref err) => Some(err),
+        }
+    }
+}
 
-        // write as much as we can while just incrementing indices
-        while write_count < len {
-            match client.socket.poll_write(&tmp_buf[write_count .. len]) {
-                Ok(Async::Ready(bytes_out)) => write_count += bytes_out, // track how much we've written
-                Ok(Async::NotReady) => break,
-                Err(e) => return Err(e)
+impl From<ioError> for GenError {
+    fn from(err: ioError) -> GenError {
+        GenError::Io(err)
+    }
+}
+
+impl From<ParseError> for GenError {
+    fn from(err: ParseError) -> GenError {
+        GenError::Parse(err)
+    }
+}
+
+impl From<ircError> for GenError {
+    fn from(err: ircError) -> GenError {
+        GenError::IRC(err)
+    }
+}
+
+#[derive(Debug)]
+pub enum Host {
+    Hostname(String),
+    HostAddr(IpAddr),
+}
+
+impl Clone for Host {
+    fn clone (&self) -> Self {
+        match &self {
+            Host::Hostname(host) => Host::Hostname(host.clone()),
+            Host::HostAddr(ip) => Host::HostAddr(*ip)
+        }
+    }
+}
+
+pub fn create_host_string(host_var: &Host) -> String {
+    match host_var {
+        Host::Hostname(hostname_str) => hostname_str.to_string(),
+        Host::HostAddr(ip_addr) => ip_addr.to_string(),
+    }
+}
+
+#[derive(Debug)]
+pub enum ClientType {
+    Unregistered,
+    User(Arc<irc::User>),
+    //Server(Arc<Mutex<irc::Server>>), leave serv implmentation for much later
+    ProtoUser(Arc<Mutex<irc::ProtoUser>>),
+}
+
+impl Clone for ClientType {
+    fn clone(&self) -> Self {
+        match self {
+            ClientType::Unregistered => ClientType::Unregistered,
+            ClientType::User(user_ptr) => ClientType::User(Arc::clone(user_ptr)),
+            ClientType::ProtoUser(proto_user_ptr) => {
+                ClientType::ProtoUser(Arc::clone(proto_user_ptr))
             }
         }
-
-        // if write_count > 0, get mutex again and shift bytes
-        // (or just reset index if write_count == index
-        if write_count > 0 {
-            if write_count == client.output.index {
-                client.output.index = 0;
-            } else {
-                client.output.shift_bytes_to_start(write_count);
-            }
-        }
-
-        // only return Ready when it's time to drop the client
-        Ok(write_count)
-    }
-
-    fn try_read(&mut self, client: &mut Client) -> Result<usize, Error> {
-        // we'll read anything we can into a temp buffer first, then only later
-        // transfer it to the mutex guarded client.output buffer
-        let mut tmp_buf: [u8; rfc::MAX_MSG_SIZE] = [0; rfc::MAX_MSG_SIZE];
-        let mut tmp_index: usize = 0;
-        while tmp_index < rfc::MAX_MSG_SIZE { // loop until there's nothing to read or the buffer's full
-            match client.socket.poll_read(&mut tmp_buf[tmp_index ..]) {
-                Ok(Async::Ready(bytes_read)) if bytes_read == 0 =>
-                    // EOF - this Future completes when the client is no more
-                    // WARNING - possible edge case:
-                    // client writes a valid message followed directly by EOF,
-                    // we end up ignoring their message in the buffer
-                    return Err(Error::new(ErrorKind::UnexpectedEof, "received EOF")),
-                Ok(Async::Ready(bytes_read)) => tmp_index += bytes_read,
-                Ok(Async::NotReady) => break, // can't read no more
-                Err(e) => return Err(e)
-            }
-        }
-
-        // now we have (potentially) filled some bytes in a temp buffer
-        // get a mutex lock and update stuff
-        if tmp_index > 0 {
-            // if the below call returns an error, the client will be dropped
-            client.input.append_bytes(&mut tmp_buf[.. tmp_index])?;
-        }
-
-        Ok(tmp_index)
-    }
-
-    // forward incoming message to other users
-    fn broadcast(&self, map: &HashMap<u32, Arc<Mutex<Client>>>, msg: &str) {
-        for (id, target) in map {
-            // skip writing to ourself
-            if *id == self.id {
-                continue;
-            }
-            
-            // get a mutex on the other client
-            let mut target = target.lock().unwrap();
-
-            // send_line() takes care of notifying the Future's task and flags
-            // the client as dead if the append fails (indicates full buffer
-            // (indicates flushes are not successful))
-            target.send_line(&msg);
-        }
     }
 }
 
-impl Future for ClientFuture {
-    type Item = ();
-    type Error = ();
-    // this here is the main thing
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let client = Arc::clone(&self.client);
-        let mut client = client.lock().unwrap();  // client is now under mutex lock
+type MsgRecvr = mpsc::Receiver<String>;
 
-        // is connection/client dead? drop from list and return Ready to complete our future
-        if client.dead == true {
-            self.unlink_client(&client);
-            return Ok(Async::Ready(()));
-        }
-
-        // if its the first time polling, we need to register our task
-        if self.first_poll == true {
-            self.first_poll = false;
-            client.handler = task::current();
-        }
-
-        // try to write if there is anything in outbuf,
-        // returns error if there is a connection problem, in which case drop the client
-	if let Err(_e) = self.try_flush(&mut client) {
-            self.unlink_client(&client);
-            return Ok(Async::Ready(()));
-        }
-
-        // try to read into our client's in-buffer
-        if let Err(_e) = self.try_read(&mut client) {
-            self.unlink_client(&client);
-            return Ok(Async::Ready(()));
-        }
-
-        // loop while client's input buffer contains line delimiters
-        let client_list = self.client_list.lock().unwrap();
-        while client.input.has_delim() {
-            let msg_string = client.input.extract_ln();
-            self.broadcast(&client_list.map, &msg_string);
-        }
-        Ok(Async::NotReady)
+pub async fn run_write_task(sock: OwnedWriteHalf, mut rx: MsgRecvr) -> Result<(), ioError> {
+    /* apparently we can't have ? after await on any of these
+     * functions, because await returns (), but recv() and
+     * write_all()/flush() shouldn't return (), should they? */
+    let mut stream = BufWriter::new(sock);
+    while let Some(msg) = rx.recv().await {
+        stream.write(msg.as_bytes()).await?;
+        stream.flush().await?;
     }
+    Ok(())
 }
 
-// externally, clients will probably be collected in a vector/hashmap somewhere
-// each client will have a unique identifier: their host (type irc::Host),
-// each must have a socket associated with it
-// clients here mean something associated with a socket connection -
-// i.e. they can be servers or users
-// somewhere we'll need code for mapping external users to whatever
-// relay server we can reach them through
-impl Client {
-    // since new clients will be created on a new connection event,
-    // we'll need a socket type as a parameter
-    // implementation decision: explicitly return as a pointer to heap data
-    // will also be necessary that all threads can access every client object
-    pub fn new(id: u32, task: Task, socket: TcpStream) -> Client {
+pub async fn run_client_handler (id: u64, host: Host, irc: Arc<Core>, tx: MsgSendr, sock: OwnedReadHalf) -> Result<(), ioError> {
+    let mut handler = ClientHandler::new(id, host, Arc::clone(&irc), tx, sock);
+    irc.insert_client(handler.id, Arc::downgrade(&handler.client));
+    /* would it be ridic to spawn a new process for every
+     * message received from the user, and if we did that
+     * what would we do about joining the tasks to check
+     * if any of them failed, i.e. require us to shutdown
+     * this client and clean up? */
+    /* as it stands, process().await means we wait til
+     * the fn returns, and inside process() each input
+     * line from the client is handled one by one, which
+     * is probably fine, who's gonna send additional commands
+     * to the server and care whether we process them
+     * asynchronously or not? */
+    let res = process_lines(&mut handler, Arc::clone(&irc)).await;
+
+    /* whether we had an error or a graceful return,
+     * we need to do some cleanup, namely: remove the client
+     * from the hash table the IRC daemon holds of users/
+     * clients */
+    match handler
+        .client
+        .clone()
+        .get_client_type()
+    {
+        ClientType::User(user_ptr) => {
+            irc.remove_name(&user_ptr.get_nick());
+        }
+        _ => (), // do nothing
+    }
+
+    /* should probably have a look at res and do something
+     * with the errors in there, if there are any... */
+    Ok(())
+}
+
+/* Receive and process IRC messages */
+async fn process_lines(handler: &mut ClientHandler, irc: Arc<Core>) -> Result<(), GenError> {
+    while let Some(line) = handler.stream.next_line().await? {
+        /* an error here is something for the remote user,
+         * so whatever the result, we get it in reply and
+         * we send that to them - will also need to format as
+         * an IRC message, and since there could be more than
+         * one message as a reply, we may want to use iterators/
+         * combinators to deal with this */
+        let reply = match parse_message(&line) {
+            Ok(parsed_msg) => {
+                /* currently this code will early return on any IRC error,
+                 * which is definitely not what we want... need some extra
+                 * error composition so irc::command() only returns an actual
+                 * error if it's a QUIT/KILL situation */
+                irc::command(Arc::clone(&irc), Arc::clone(&handler.client), parsed_msg).await?
+            }
+            Err(_) => (), /* TODO: add code to convert parse error to IRC message */
+        };
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct ClientHandler {
+    stream: Lines<BufReader<OwnedReadHalf>>,
+    client: Arc<Client>,
+    id: u64,
+}
+
+impl ClientHandler {
+    pub fn new(id: u64, host: Host, irc: Arc<Core>, tx: MsgSendr, sock: OwnedReadHalf) -> Self {
+        ClientHandler {
+            stream: BufReader::new(sock).lines(),
+            client: Client::new(id, host, irc, tx),
+            id,
+        }
+    }
+
+}
+
+type MsgSendr = mpsc::Sender<String>;
+
+#[derive(Debug)]
+pub struct Client {
+    client_type: Mutex<ClientType>,
+    id: u64,
+    host: Host,
+    irc: Arc<Core>,
+    tx: MsgSendr,
+}
+
+impl Clone for Client {
+    fn clone(&self) -> Self {
         Client {
-            output: buffer::MessageBuffer::new(),
-            input: buffer::MessageBuffer::new(),
-            handler: task, // placeholder
-            dead: false,
-            socket,
-            id
+            client_type: Mutex::new(self.client_type.lock().unwrap().clone()),
+            id: self.id,
+            host: self.host.clone(),
+            irc: Arc::clone(&self.irc),
+            tx: self.tx.clone(),
+        }
+    }
+}
+
+impl Client {
+    pub fn new(id: u64, host: Host, irc: Arc<Core>, tx: MsgSendr) -> Arc<Self> {
+        Arc::new(Client {
+            client_type: Mutex::new(ClientType::Unregistered),
+            id,
+            host,
+            irc,
+            tx,
+        })
+    }
+
+    // don't call this unless is_registered returns true
+    pub fn get_user(self: &Arc<Self>) -> Arc<User> {
+        match self.get_client_type() {
+            ClientType::User(u_ptr) => return Arc::clone(&u_ptr),
+            _ => panic!("impossible")
         }
     }
 
-    // an event handler waiting on new data from the client
-    // must call this handler when a CR-LF is found
-    // return type is a ClientCommand, which will be processed elsewhere
-    pub fn end_of_line(&mut self) -> Result<ClientCommand, parser::ParseError> {
-        // NB: buffer index might not be directly after the CR-LF
-        // first bit of code locates a CR-LF
-        // next bit extracts a string and moves buffer data after CR-LF
-        // to front, reseting the index afterwards
-        let command_string = self.input.extract_ln();
-
-        // i will insist that the event handler doesn't hand us empty lines
-        assert!(command_string.len() != 0);
-        let parsed_msg = parser::parse_message(&command_string)?;
-
-        // do something with the parsed message, irc.rs code needs to get involved
-        Ok(ClientCommand::Empty)
+    pub fn get_host(self: &Arc<Self>) -> Host {
+        match &self.host {
+            Host::Hostname(name) => Host::Hostname(name.clone()),
+            Host::HostAddr(ip_addr) => Host::HostAddr(*ip_addr),
+        }
     }
 
-    // fn sends a line to the client - this function adds the cr-lf delimiter,
-    // so just an undelimited line should be passed as a &str
-    // the function also notifies the runtime that the socket handler needs
-    // to be polled to flush the write
-    pub fn send_line(&mut self, buf: &str) {
-        let mut string = buf.to_string();
+    pub fn is_registered(self: &Arc<Self>) -> bool {
+        match self.get_client_type() {
+            ClientType::User(_p) => true,
+            ClientType::ProtoUser(_p) => false,
+            ClientType::Unregistered => false
+        }
+    }
+
+    pub fn get_host_string(self: &Arc<Self>) -> String {
+        match &self.host {
+            Host::Hostname(name) => name.to_string(),
+            Host::HostAddr(ip_addr) => ip_addr.to_string(),
+        }
+    }
+
+    pub fn get_client_type(self: &Arc<Self>) -> ClientType {
+        self.client_type.lock().unwrap().clone()
+    }
+
+    pub fn set_client_type(self: Arc<Self>, new_client_type: ClientType) {
+        let mut lock_ptr = self.client_type.lock().unwrap();
+        *lock_ptr = new_client_type;
+    }
+
+    pub fn get_id(self: &Arc<Self>) -> u64 {
+        self.id
+    }
+
+    pub fn get_irc(self: &Arc<Self>) -> Arc<Core> {
+        Arc::clone(&self.irc)
+    }
+
+    pub async fn send_line(self: Arc<Self>, line: &str) {
+        let mut string = String::from(line);
         string.push_str("\r\n");
-        self.handler.notify();
-        if let Err(_e) = self.output.append_str(&string) {
-            self.dead = true;
-        }
+        /* thankfully mpsc::Sender has its own .clone()
+         * method, so we don't have to worry about our own
+         * Arc/Mutex wrapping, or the problems of holding
+         * a mutex across an await */
+        self.tx.clone().send(string).await;
     }
 }

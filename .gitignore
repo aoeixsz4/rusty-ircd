@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 **/.*.swp
+/examples/future.rs
+/examples/echo.rs
+/commit

@@ -33,23 +33,10 @@ fn gimme_enum_box(cmd: &str) -> Result<(String, Box<Cmd>), MyErrorType> {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let cmd = if args.len() > 1 {
-        &args[1]
-    } else { "FAIL" };
-    match gimme_enum_box(cmd) {
-        Ok(tuple) => {
-            let (msg, mybox) = tuple;
-            println!("{}", msg);
-            match *mybox {
-                Cmd::Join(chan) => println!("you are now in: {}", chan),
-                Cmd::Quit => (),
-                Cmd::Message(string1, string2) => println!("your messages are: {}, {}", string1, string2),
-            }
-        }
-        Err(error) => match error {
-            MyErrorType::Fail => println!("you are a failure!")
-        }
-    }
+    let mut args_iter = env::args();
+    let program = args_iter.next().unwrap();
+    println!("program was: {}", program);
+    let args_joined = args_iter.collect::<Vec<String>>().join(", ");
+    println!("args were: {}", args_joined);
 }
 
