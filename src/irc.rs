@@ -63,7 +63,8 @@ impl User {
 
     pub fn set_nick(self: Arc<Self>, name: &str) -> Result<(), ircError> {
         /* ? propagates the potential nick in use error */
-        self.irc.insert_name(name, NamedEntity::User(Arc::downgrade(&self)));
+        self.irc
+            .insert_name(name, NamedEntity::User(Arc::downgrade(&self)));
         *self.nick.lock().unwrap() = name.to_string();
         Ok(())
     }
@@ -121,15 +122,12 @@ impl Core {
     }
 
     pub fn insert_client(&self, id: u64, client: Weak<Client>) {
-        self.clients
-            .lock()
-            .unwrap()
-            .insert(id, client);
+        self.clients.lock().unwrap().insert(id, client);
     }
 
     pub fn insert_name(&self, name: &str, item: NamedEntity) -> Result<(), ircError> {
         let mut hashmap = self.namespace.lock().unwrap();
-        if ! hashmap.contains_key(name) {
+        if !hashmap.contains_key(name) {
             hashmap.insert(name.to_string(), item);
             Ok(())
         } else {
@@ -139,7 +137,9 @@ impl Core {
 
     pub fn remove_name(&self, name: &str) -> Result<NamedEntity, ircError> {
         let mut hashmap = self.namespace.lock().unwrap();
-        hashmap.remove(name).ok_or_else(||self::error::ERR_NOSUCHNICK)
+        hashmap
+            .remove(name)
+            .ok_or_else(|| self::error::ERR_NOSUCHNICK)
     }
 
     pub fn get_client(&self, id: &u64) -> Option<Weak<Client>> {
@@ -159,7 +159,7 @@ impl Core {
             Some(NamedEntity::User(user_ptr)) => Ok(NamedEntity::User(Weak::clone(&user_ptr))),
             //Some(NamedEntity::Chan(chan_ptr)) =>
             //  Some(NamedEntity::Chan(Weak::clone(&chan_ptr))),
-            None => Err(self::error::ERR_NOSUCHNICK)
+            None => Err(self::error::ERR_NOSUCHNICK),
         }
     }
 
@@ -202,14 +202,13 @@ pub async fn command(
     match &params.command[..] {
         "NICK" => nick(&irc, client, params),
         "USER" => user(&irc, client, params),
-        "PRIVMSG" if registered => {
-            Ok(msg(&irc, client.get_user(), params).await?)
-        },
+        "PRIVMSG" if registered => Ok(msg(&irc, client.get_user(), params).await?),
         "NOTICE" if registered =>
         /* RFC states NOTICE messages don't get replies */
         {
-            msg(&irc, client.get_user(), params).await; Ok(())
-        },
+            msg(&irc, client.get_user(), params).await;
+            Ok(())
+        }
         _ => Err(self::error::ERR_UNKNOWNCOMMAND),
     }
 }
@@ -232,7 +231,10 @@ pub async fn msg(irc: &Core, user: Arc<User>, mut params: ParsedMsg) -> Result<(
     // loop over targets
     for target in targets.split(',') {
         if let NamedEntity::User(user_weak) = irc.get_name(target)? {
-            Weak::upgrade(&user_weak).unwrap().send_msg(Arc::clone(&user), &message).await;
+            Weak::upgrade(&user_weak)
+                .unwrap()
+                .send_msg(Arc::clone(&user), &message)
+                .await;
         }
     }
     Ok(())
@@ -339,9 +341,12 @@ pub fn nick(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ir
                 // full registration! wooo
                 let username = proto_user.username.as_ref();
                 let real_name = proto_user.real_name.as_ref();
-                Some(ClientType::User(
-                    irc.register(&client, nick, username.unwrap().to_string(), real_name.unwrap().to_string()),
-                ))
+                Some(ClientType::User(irc.register(
+                    &client,
+                    nick,
+                    username.unwrap().to_string(),
+                    real_name.unwrap().to_string(),
+                )))
             }
         }
     };

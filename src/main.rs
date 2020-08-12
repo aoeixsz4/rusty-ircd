@@ -4,12 +4,12 @@ extern crate tokio;
 pub mod irc;
 pub mod client;
 pub mod parser;
-use crate::client::{run_write_task, run_client_handler, Host};
+use crate::client::{run_client_handler, run_write_task, Host};
 use crate::irc::Core;
 use dns_lookup::lookup_addr;
 use std::io::Error as ioError;
-use std::sync::Arc;
 use std::net::IpAddr;
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task;
@@ -27,7 +27,7 @@ async fn process_socket(sock: TcpStream, irc: Arc<Core>) -> Result<(), ioError> 
      * unwraps to give Host or an ioError - may need some additional error
      * composition to deal with the possible JoinError... */
     let ip_address = sock.peer_addr()?.ip();
-    let host = task::spawn_blocking(move|| get_host(ip_address)).await??;
+    let host = task::spawn_blocking(move || get_host(ip_address)).await??;
     let (tx, rx) = mpsc::channel(32);
     let (read, write) = sock.into_split();
     tokio::spawn(run_write_task(write, rx));
