@@ -76,10 +76,10 @@ pub enum Host {
 }
 
 impl Clone for Host {
-    fn clone (&self) -> Self {
+    fn clone(&self) -> Self {
         match &self {
             Host::Hostname(host) => Host::Hostname(host.clone()),
-            Host::HostAddr(ip) => Host::HostAddr(*ip)
+            Host::HostAddr(ip) => Host::HostAddr(*ip),
         }
     }
 }
@@ -125,7 +125,13 @@ pub async fn run_write_task(sock: OwnedWriteHalf, mut rx: MsgRecvr) -> Result<()
     Ok(())
 }
 
-pub async fn run_client_handler (id: u64, host: Host, irc: Arc<Core>, tx: MsgSendr, sock: OwnedReadHalf) -> Result<(), ioError> {
+pub async fn run_client_handler(
+    id: u64,
+    host: Host,
+    irc: Arc<Core>,
+    tx: MsgSendr,
+    sock: OwnedReadHalf,
+) -> Result<(), ioError> {
     let mut handler = ClientHandler::new(id, host, Arc::clone(&irc), tx, sock);
     irc.insert_client(handler.id, Arc::downgrade(&handler.client));
     /* would it be ridic to spawn a new process for every
@@ -145,11 +151,7 @@ pub async fn run_client_handler (id: u64, host: Host, irc: Arc<Core>, tx: MsgSen
      * we need to do some cleanup, namely: remove the client
      * from the hash table the IRC daemon holds of users/
      * clients */
-    match handler
-        .client
-        .clone()
-        .get_client_type()
-    {
+    match handler.client.clone().get_client_type() {
         ClientType::User(user_ptr) => {
             irc.remove_name(&user_ptr.get_nick());
         }
@@ -199,7 +201,6 @@ impl ClientHandler {
             id,
         }
     }
-
 }
 
 type MsgSendr = mpsc::Sender<String>;
@@ -240,7 +241,7 @@ impl Client {
     pub fn get_user(self: &Arc<Self>) -> Arc<User> {
         match self.get_client_type() {
             ClientType::User(u_ptr) => return Arc::clone(&u_ptr),
-            _ => panic!("impossible")
+            _ => panic!("impossible"),
         }
     }
 
@@ -255,7 +256,7 @@ impl Client {
         match self.get_client_type() {
             ClientType::User(_p) => true,
             ClientType::ProtoUser(_p) => false,
-            ClientType::Unregistered => false
+            ClientType::Unregistered => false,
         }
     }
 
