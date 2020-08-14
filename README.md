@@ -6,6 +6,9 @@ Therefore, efforts will be made to prioritise readable, maintainable code that i
 Indeed these will be valuable tools for the author to learn about, too.
 
 ## Branches
+### error-handling
+Make a branch to improve the handling of errors and implement error replies from server to client.
+
 ### main << merge tokio-v0.2-port
 The ported code to tokio 0.2 compiles and runs so is now merged to main.
 As the name suggests, it's an overhaul of the codebase, moving to tokio 0.2 and the new Rust async/.await model.
