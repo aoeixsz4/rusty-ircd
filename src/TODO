@@ -1,3 +1,0 @@
- o write Client::poll() and ClientWriter::poll() <-- DONE
- o integrate new tokio-0.2.0 based code (main.rs and client.rs) with irc.rs and parser.rs
- o check that types and Arc/Mutex use makes sense

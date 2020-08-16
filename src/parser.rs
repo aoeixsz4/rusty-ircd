@@ -1,16 +1,22 @@
-// this module deals with parsing IRC message strings, and returning
-// a Vec<&str> of parameters etc. to pass to the main protocol handlers
-// earlier vesions of this code dealt too much with things specific to certain commands
-// the parsers job should instead ensure messages conform to the standard structure
-// as defined in Augmented BNF in the RFC 2812, but without ensuring
-// that command-specific restrictions are adhered to (that will be done elsewhere in irc or
-// irc::command or so)
-// link: https://tools.ietf.org/html/rfc2812#section-2.3.1
-// plus an optional source field (for server messages, indicating origin)
+/* rusty-ircd - an IRC daemon written in Rust
+*  Copyright (C) Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
+
+*  This program is free software: you can redistribute it and/or modify
+*  it under the terms of the GNU Lesser General Public License as
+*  published by the Free Software Foundation, either version 3 of the
+*  License, or (at your option) any later version.
+
+*  This program is distributed in the hope that it will be useful,
+*  but WITHOUT ANY WARRANTY; without even the implied warranty of
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*  GNU Lesser General Public License for more details.
+
+*  You should have received a copy of the GNU Lesser General Public License
+*  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 use crate::irc::rfc_defs as rfc;
 use std::{error, fmt};
 
-// will want to change these types at some point
 #[derive(Debug)]
 pub enum ParseError {
     NoCommand,

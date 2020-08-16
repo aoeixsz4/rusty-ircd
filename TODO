@@ -1,5 +1,0 @@
- o compile, test and run code
- o switch to tokio 0.2
- o replace MessageBuffer with bytes::BytesMut
- o also tokio::io::BufWriter for sending data
- o get message relaying working again
