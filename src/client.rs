@@ -1,5 +1,5 @@
 /* rusty-ircd - an IRC daemon written in Rust
-*  Copyright (C) Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
+*  Copyright (C) 2020 Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
 
 *  This program is free software: you can redistribute it and/or modify
 *  it under the terms of the GNU Lesser General Public License as
@@ -17,6 +17,7 @@
 extern crate tokio;
 #[macro_use]
 use crate::irc::{self, Core, User};
+use crate::io::{ReadHalfWrap, WriteHalfWrap};
 use crate::irc::error::Error as ircError;
 use crate::parser::{parse_message, ParseError};
 use std::error;
@@ -25,7 +26,6 @@ use std::io::Error as ioError;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 
 /* There are 3 main types of errors we can have here...
@@ -100,13 +100,6 @@ impl Clone for Host {
     }
 }
 
-pub fn create_host_string(host_var: &Host) -> String {
-    match host_var {
-        Host::Hostname(hostname_str) => hostname_str.to_string(),
-        Host::HostAddr(ip_addr) => ip_addr.to_string(),
-    }
-}
-
 #[derive(Debug)]
 pub enum ClientType {
     Unregistered,
@@ -126,100 +119,6 @@ impl Clone for ClientType {
         }
     }
 }
-
-type MsgRecvr = mpsc::Receiver<String>;
-
-pub async fn run_write_task(sock: OwnedWriteHalf, mut rx: MsgRecvr) -> Result<(), ioError> {
-    /* apparently we can't have ? after await on any of these
-     * functions, because await returns (), but recv() and
-     * write_all()/flush() shouldn't return (), should they? */
-    let mut stream = BufWriter::new(sock);
-    while let Some(msg) = rx.recv().await {
-        stream.write(msg.as_bytes()).await?;
-        stream.flush().await?;
-    }
-    Ok(())
-}
-
-pub async fn run_client_handler(
-    id: u64,
-    host: Host,
-    irc: Arc<Core>,
-    tx: MsgSendr,
-    sock: OwnedReadHalf,
-) -> Result<(), ioError> {
-    let mut handler = ClientHandler::new(id, host, &irc, tx, sock);
-    irc.insert_client(handler.id, Arc::downgrade(&handler.client));
-    /* would it be ridic to spawn a new process for every
-     * message received from the user, and if we did that
-     * what would we do about joining the tasks to check
-     * if any of them failed, i.e. require us to shutdown
-     * this client and clean up? */
-    /* as it stands, process().await means we wait til
-     * the fn returns, and inside process() each input
-     * line from the client is handled one by one, which
-     * is probably fine, who's gonna send additional commands
-     * to the server and care whether we process them
-     * asynchronously or not? */
-    let res = process_lines(&mut handler, &irc).await;
-
-    /* whether we had an error or a graceful return,
-     * we need to do some cleanup, namely: remove the client
-     * from the hash table the IRC daemon holds of users/
-     * clients */
-    match handler.client.get_client_type() {
-        ClientType::User(user_ptr) => {
-            irc.remove_name(&user_ptr.get_nick());
-        }
-        _ => (), // do nothing
-    }
-
-    /* should probably have a look at res and do something
-     * with the errors in there, if there are any... */
-    Ok(())
-}
-
-/* Receive and process IRC messages */
-async fn process_lines(handler: &mut ClientHandler, irc: &Core) -> Result<(), GenError> {
-    while let Some(line) = handler.stream.next_line().await? {
-        /* an error here is something for the remote user,
-         * so whatever the result, we get it in reply and
-         * we send that to them - will also need to format as
-         * an IRC message, and since there could be more than
-         * one message as a reply, we may want to use iterators/
-         * combinators to deal with this */
-        let reply = match parse_message(&line) {
-            Ok(parsed_msg) => {
-                /* currently this code will early return on any IRC error,
-                 * which is definitely not what we want... need some extra
-                 * error composition so irc::command() only returns an actual
-                 * error if it's a QUIT/KILL situation */
-                irc::command(&irc, &handler.client, parsed_msg).await?
-            }
-            Err(_) => (), /* TODO: add code to convert parse error to IRC message */
-        };
-    }
-    Ok(())
-}
-
-#[derive(Debug)]
-pub struct ClientHandler {
-    stream: Lines<BufReader<OwnedReadHalf>>,
-    client: Arc<Client>,
-    id: u64,
-}
-
-impl ClientHandler {
-    pub fn new(id: u64, host: Host, irc: &Arc<Core>, tx: MsgSendr, sock: OwnedReadHalf) -> Self {
-        ClientHandler {
-            stream: BufReader::new(sock).lines(),
-            client: Client::new(id, host, irc, tx),
-            id,
-        }
-    }
-}
-
-type MsgSendr = mpsc::Sender<String>;
 
 #[derive(Debug)]
 pub struct Client {
@@ -306,4 +205,104 @@ impl Client {
          * a mutex across an await */
         self.tx.clone().send(string).await;
     }
+}
+
+type MsgSendr = mpsc::Sender<String>;
+type MsgRecvr = mpsc::Receiver<String>;
+
+#[derive(Debug)]
+pub struct ClientHandler {
+    stream: Lines<BufReader<ReadHalfWrap>>,
+    client: Arc<Client>,
+    id: u64,
+}
+
+impl ClientHandler {
+    pub fn new(id: u64, host: Host, irc: &Arc<Core>, tx: MsgSendr, sock: ReadHalfWrap) -> Self {
+        ClientHandler {
+            stream: BufReader::new(sock).lines(),
+            client: Client::new(id, host, irc, tx),
+            id,
+        }
+    }
+}
+
+pub fn create_host_string(host_var: &Host) -> String {
+    match host_var {
+        Host::Hostname(hostname_str) => hostname_str.to_string(),
+        Host::HostAddr(ip_addr) => ip_addr.to_string(),
+    }
+}
+
+pub async fn run_write_task(sock: WriteHalfWrap, mut rx: MsgRecvr) -> Result<(), ioError> {
+    /* apparently we can't have ? after await on any of these
+     * functions, because await returns (), but recv() and
+     * write_all()/flush() shouldn't return (), should they? */
+    let mut stream = BufWriter::new(sock);
+    while let Some(msg) = rx.recv().await {
+        stream.write(msg.as_bytes()).await?;
+        stream.flush().await?;
+    }
+    Ok(())
+}
+
+pub async fn run_client_handler(
+    id: u64,
+    host: Host,
+    irc: Arc<Core>,
+    tx: MsgSendr,
+    sock: ReadHalfWrap,
+) -> Result<(), ioError> {
+    let mut handler = ClientHandler::new(id, host, &irc, tx, sock);
+    irc.insert_client(handler.id, Arc::downgrade(&handler.client));
+    /* would it be ridic to spawn a new process for every
+     * message received from the user, and if we did that
+     * what would we do about joining the tasks to check
+     * if any of them failed, i.e. require us to shutdown
+     * this client and clean up? */
+    /* as it stands, process().await means we wait til
+     * the fn returns, and inside process() each input
+     * line from the client is handled one by one, which
+     * is probably fine, who's gonna send additional commands
+     * to the server and care whether we process them
+     * asynchronously or not? */
+    let res = process_lines(&mut handler, Arc::clone(&irc)).await;
+
+    /* whether we had an error or a graceful return,
+     * we need to do some cleanup, namely: remove the client
+     * from the hash table the IRC daemon holds of users/
+     * clients */
+    match handler.client.clone().get_client_type() {
+        ClientType::User(user_ptr) => {
+            irc.remove_name(&user_ptr.get_nick());
+        }
+        _ => (), // do nothing
+    }
+
+    /* should probably have a look at res and do something
+     * with the errors in there, if there are any... */
+    Ok(())
+}
+
+/* Receive and process IRC messages */
+async fn process_lines(handler: &mut ClientHandler, irc: Arc<Core>) -> Result<(), GenError> {
+    while let Some(line) = handler.stream.next_line().await? {
+        /* an error here is something for the remote user,
+         * so whatever the result, we get it in reply and
+         * we send that to them - will also need to format as
+         * an IRC message, and since there could be more than
+         * one message as a reply, we may want to use iterators/
+         * combinators to deal with this */
+        let reply = match parse_message(&line) {
+            Ok(parsed_msg) => {
+                /* currently this code will early return on any IRC error,
+                 * which is definitely not what we want... need some extra
+                 * error composition so irc::command() only returns an actual
+                 * error if it's a QUIT/KILL situation */
+                irc::command(&irc, &handler.client, parsed_msg).await?
+            }
+            Err(_) => (), /* TODO: add code to convert parse error to IRC message */
+        };
+    }
+    Ok(())
 }
