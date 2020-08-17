@@ -1,0 +1,7 @@
+Noticed a bug when testing implement-tls branch.
+
+Currently, when executing PRIVMSG commands (or NOTICE),
+server sends just the message content without prefix indicating
+the source, nor the PRIVMSG/NOTICE command itself.
+
+Would like to fix this for version 0.1.1
