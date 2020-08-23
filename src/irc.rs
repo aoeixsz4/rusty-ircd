@@ -85,15 +85,47 @@ impl User {
         Ok(())
     }
 
-    pub fn get_nick(self: Arc<Self>) -> String {
+    pub fn get_nick(&self) -> String {
         self.nick.lock().unwrap().clone()
     }
 
-    pub async fn send_msg(self: Arc<Self>, src: Arc<User>, msg: &str) {
+    pub fn get_username(&self) -> String {
+        self.username.clone()
+    }
+
+    pub fn get_host(&self) -> Host {
+        match &self.host {
+            Host::Hostname(name) => Host::Hostname(name.clone()),
+            Host::HostAddr(ip_addr) => Host::HostAddr(*ip_addr),
+        }
+    }
+
+    pub fn get_host_string(&self) -> String {
+        match &self.host {
+            Host::Hostname(name) => name.to_string(),
+            Host::HostAddr(ip_addr) => ip_addr.to_string(),
+        }
+    }
+
+    pub fn get_realname(&self) -> String {
+        self.real_name.lock().unwrap().clone()
+    }
+
+    pub fn get_prefix(&self) -> String {
+        format!("{}!{}@{}", self.get_nick(), self.username, self.get_host_string())
+    }
+
+    pub async fn send_msg(&self, src: Arc<User>, msg: &str, msg_type: &MsgType) {
+        let prefix = src.get_prefix();
+        let msg_type_str = match *msg_type {
+            MsgType::PrivMsg => "PRIVMSG",
+            MsgType::Notice => "NOTICE"
+        };
+        let line = format!(":{} {} :{}", &prefix, msg_type_str, msg);
         let my_client = self.client.upgrade().unwrap();
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
-        my_client.send_line(msg).await;
+        my_client.send_line(&line).await;
     }
 }
 
@@ -208,28 +240,35 @@ impl Core {
     }
 }
 
+#[derive(Debug)]
+pub enum MsgType {
+    PrivMsg,
+    Notice
+}
+
 pub async fn command(
     irc: Arc<Core>,
     client: Arc<Client>,
     params: ParsedMsg,
 ) -> Result<(), ircError> {
-    let registered = Arc::clone(&client).is_registered();
+    let registered = client.is_registered();
 
     match &params.command[..] {
         "NICK" => nick(&irc, client, params),
         "USER" => user(&irc, client, params),
-        "PRIVMSG" if registered => Ok(msg(&irc, client.get_user(), params).await?),
+        "PRIVMSG" if registered => Ok(msg(&irc, client.get_user(), params, MsgType::PrivMsg).await?),
         "NOTICE" if registered =>
         /* RFC states NOTICE messages don't get replies */
         {
-            msg(&irc, client.get_user(), params).await;
+            msg(&irc, client.get_user(), params, MsgType::Notice).await;
             Ok(())
-        }
+        },
+        "PRIVMSG" | "NOTICE" if ! registered => Err(self::error::ERR_NOTREGISTERED),
         _ => Err(self::error::ERR_UNKNOWNCOMMAND),
     }
 }
 
-pub async fn msg(irc: &Core, user: Arc<User>, mut params: ParsedMsg) -> Result<(), ircError> {
+pub async fn msg(irc: &Core, user: Arc<User>, mut params: ParsedMsg, msg_type: MsgType) -> Result<(), ircError> {
     if params.opt_params.len() < 1 {
         return Err(self::error::ERR_NORECIPIENT);
     }
@@ -249,7 +288,7 @@ pub async fn msg(irc: &Core, user: Arc<User>, mut params: ParsedMsg) -> Result<(
         if let NamedEntity::User(user_weak) = irc.get_name(target)? {
             Weak::upgrade(&user_weak)
                 .unwrap()
-                .send_msg(Arc::clone(&user), &message)
+                .send_msg(Arc::clone(&user), &message, &msg_type)
                 .await;
         }
     }

@@ -268,7 +268,7 @@ impl Client {
         }
     }
 
-    pub fn is_registered(self: &Arc<Self>) -> bool {
+    pub fn is_registered(&self) -> bool {
         match self.get_client_type() {
             ClientType::User(_p) => true,
             ClientType::ProtoUser(_p) => false,
@@ -276,31 +276,31 @@ impl Client {
         }
     }
 
-    pub fn get_host_string(self: &Arc<Self>) -> String {
+    pub fn get_host_string(&self) -> String {
         match &self.host {
             Host::Hostname(name) => name.to_string(),
             Host::HostAddr(ip_addr) => ip_addr.to_string(),
         }
     }
 
-    pub fn get_client_type(self: &Arc<Self>) -> ClientType {
+    pub fn get_client_type(&self) -> ClientType {
         self.client_type.lock().unwrap().clone()
     }
 
-    pub fn set_client_type(self: Arc<Self>, new_client_type: ClientType) {
+    pub fn set_client_type(&self, new_client_type: ClientType) {
         let mut lock_ptr = self.client_type.lock().unwrap();
         *lock_ptr = new_client_type;
     }
 
-    pub fn get_id(self: &Arc<Self>) -> u64 {
+    pub fn get_id(&self) -> u64 {
         self.id
     }
 
-    pub fn get_irc(self: &Arc<Self>) -> Arc<Core> {
+    pub fn get_irc(&self) -> Arc<Core> {
         Arc::clone(&self.irc)
     }
 
-    pub async fn send_line(self: Arc<Self>, line: &str) {
+    pub async fn send_line(&self, line: &str) {
         let mut string = String::from(line);
         string.push_str("\r\n");
         /* thankfully mpsc::Sender has its own .clone()
