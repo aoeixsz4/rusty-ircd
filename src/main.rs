@@ -47,7 +47,7 @@ async fn process_socket(sock: TcpStream, irc: Arc<Core>) -> Result<(), ioError> 
     let (tx, rx) = mpsc::channel(32);
     let (read, write) = sock.into_split();
     tokio::spawn(run_write_task(write, rx));
-    tokio::spawn(run_client_handler(id, host, Arc::clone(&irc), tx, read));
+    tokio::spawn(run_client_handler(id, host, irc, tx, read));
     Ok(())
 }
 

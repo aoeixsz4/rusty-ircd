@@ -148,7 +148,7 @@ pub async fn run_client_handler(
     tx: MsgSendr,
     sock: OwnedReadHalf,
 ) -> Result<(), ioError> {
-    let mut handler = ClientHandler::new(id, host, Arc::clone(&irc), tx, sock);
+    let mut handler = ClientHandler::new(id, host, &irc, tx, sock);
     irc.insert_client(handler.id, Arc::downgrade(&handler.client));
     /* would it be ridic to spawn a new process for every
      * message received from the user, and if we did that
@@ -161,13 +161,13 @@ pub async fn run_client_handler(
      * is probably fine, who's gonna send additional commands
      * to the server and care whether we process them
      * asynchronously or not? */
-    let res = process_lines(&mut handler, Arc::clone(&irc)).await;
+    let res = process_lines(&mut handler, &irc).await;
 
     /* whether we had an error or a graceful return,
      * we need to do some cleanup, namely: remove the client
      * from the hash table the IRC daemon holds of users/
      * clients */
-    match handler.client.clone().get_client_type() {
+    match handler.client.get_client_type() {
         ClientType::User(user_ptr) => {
             irc.remove_name(&user_ptr.get_nick());
         }
@@ -180,7 +180,7 @@ pub async fn run_client_handler(
 }
 
 /* Receive and process IRC messages */
-async fn process_lines(handler: &mut ClientHandler, irc: Arc<Core>) -> Result<(), GenError> {
+async fn process_lines(handler: &mut ClientHandler, irc: &Core) -> Result<(), GenError> {
     while let Some(line) = handler.stream.next_line().await? {
         /* an error here is something for the remote user,
          * so whatever the result, we get it in reply and
@@ -194,7 +194,7 @@ async fn process_lines(handler: &mut ClientHandler, irc: Arc<Core>) -> Result<()
                  * which is definitely not what we want... need some extra
                  * error composition so irc::command() only returns an actual
                  * error if it's a QUIT/KILL situation */
-                irc::command(Arc::clone(&irc), Arc::clone(&handler.client), parsed_msg).await?
+                irc::command(&irc, &handler.client, parsed_msg).await?
             }
             Err(_) => (), /* TODO: add code to convert parse error to IRC message */
         };
@@ -210,7 +210,7 @@ pub struct ClientHandler {
 }
 
 impl ClientHandler {
-    pub fn new(id: u64, host: Host, irc: Arc<Core>, tx: MsgSendr, sock: OwnedReadHalf) -> Self {
+    pub fn new(id: u64, host: Host, irc: &Arc<Core>, tx: MsgSendr, sock: OwnedReadHalf) -> Self {
         ClientHandler {
             stream: BufReader::new(sock).lines(),
             client: Client::new(id, host, irc, tx),
@@ -243,29 +243,26 @@ impl Clone for Client {
 }
 
 impl Client {
-    pub fn new(id: u64, host: Host, irc: Arc<Core>, tx: MsgSendr) -> Arc<Self> {
+    pub fn new(id: u64, host: Host, irc: &Arc<Core>, tx: MsgSendr) -> Arc<Self> {
         Arc::new(Client {
             client_type: Mutex::new(ClientType::Unregistered),
             id,
             host,
-            irc,
+            irc: Arc::clone(irc),
             tx,
         })
     }
 
     // don't call this unless is_registered returns true
-    pub fn get_user(self: &Arc<Self>) -> Arc<User> {
+    pub fn get_user(&self) -> Arc<User> {
         match self.get_client_type() {
             ClientType::User(u_ptr) => return Arc::clone(&u_ptr),
             _ => panic!("impossible"),
         }
     }
 
-    pub fn get_host(self: &Arc<Self>) -> Host {
-        match &self.host {
-            Host::Hostname(name) => Host::Hostname(name.clone()),
-            Host::HostAddr(ip_addr) => Host::HostAddr(*ip_addr),
-        }
+    pub fn get_host(&self) -> &Host {
+        &self.host
     }
 
     pub fn is_registered(&self) -> bool {
@@ -296,8 +293,8 @@ impl Client {
         self.id
     }
 
-    pub fn get_irc(&self) -> Arc<Core> {
-        Arc::clone(&self.irc)
+    pub fn get_irc(&self) -> &Arc<Core> {
+        &self.irc
     }
 
     pub async fn send_line(&self, line: &str) {
