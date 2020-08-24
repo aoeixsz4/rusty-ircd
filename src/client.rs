@@ -266,7 +266,7 @@ pub async fn run_client_handler(
      * is probably fine, who's gonna send additional commands
      * to the server and care whether we process them
      * asynchronously or not? */
-    let res = process_lines(&mut handler, Arc::clone(&irc)).await;
+    let res = process_lines(&mut handler, &irc).await;
 
     /* whether we had an error or a graceful return,
      * we need to do some cleanup, namely: remove the client
@@ -285,7 +285,7 @@ pub async fn run_client_handler(
 }
 
 /* Receive and process IRC messages */
-async fn process_lines(handler: &mut ClientHandler, irc: Arc<Core>) -> Result<(), GenError> {
+async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(), GenError> {
     while let Some(line) = handler.stream.next_line().await? {
         /* an error here is something for the remote user,
          * so whatever the result, we get it in reply and
