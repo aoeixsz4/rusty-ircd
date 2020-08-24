@@ -58,7 +58,7 @@ pub struct User {
 impl User {
     pub fn new(
         id: u64,
-        irc: Arc<Core>,
+        irc: &Arc<Core>,
         nick: String,
         username: String,
         real_name: String,
@@ -67,7 +67,7 @@ impl User {
     ) -> Arc<Self> {
         Arc::new(User {
             id,
-            irc,
+            irc: Arc::clone(&irc),
             nick: Mutex::new(nick),
             username,
             real_name: Mutex::new(real_name),
@@ -115,7 +115,7 @@ impl User {
         format!("{}!{}@{}", self.get_nick(), self.username, self.get_host_string())
     }
 
-    pub async fn send_msg(&self, src: Arc<User>, msg: &str, msg_type: &MsgType) {
+    pub async fn send_msg(&self, src: &User, msg: &str, msg_type: &MsgType) {
         let prefix = src.get_prefix();
         let msg_type_str = match *msg_type {
             MsgType::PrivMsg => "PRIVMSG",
@@ -232,7 +232,7 @@ impl Core {
             nick.to_string(),
             username,
             real_name.clone(),
-            host,
+            host.clone(),
             client,
         );
         self.insert_name(&nick, NamedEntity::User(Arc::downgrade(&user)));
@@ -247,20 +247,20 @@ pub enum MsgType {
 }
 
 pub async fn command(
-    irc: Arc<Core>,
-    client: Arc<Client>,
+    irc: &Core,
+    client: &Arc<Client>,
     params: ParsedMsg,
 ) -> Result<(), ircError> {
     let registered = client.is_registered();
 
     match &params.command[..] {
-        "NICK" => nick(&irc, client, params),
-        "USER" => user(&irc, client, params),
-        "PRIVMSG" if registered => Ok(msg(&irc, client.get_user(), params, MsgType::PrivMsg).await?),
+        "NICK" => nick(irc, client, params),
+        "USER" => user(irc, client, params),
+        "PRIVMSG" if registered => Ok(msg(irc, &client.get_user(), params, MsgType::PrivMsg).await?),
         "NOTICE" if registered =>
         /* RFC states NOTICE messages don't get replies */
         {
-            msg(&irc, client.get_user(), params, MsgType::Notice).await;
+            msg(&irc, &client.get_user(), params, MsgType::Notice).await;
             Ok(())
         },
         "PRIVMSG" | "NOTICE" if ! registered => Err(self::error::ERR_NOTREGISTERED),
@@ -268,7 +268,7 @@ pub async fn command(
     }
 }
 
-pub async fn msg(irc: &Core, user: Arc<User>, mut params: ParsedMsg, msg_type: MsgType) -> Result<(), ircError> {
+pub async fn msg(irc: &Core, user: &User, mut params: ParsedMsg, msg_type: MsgType) -> Result<(), ircError> {
     if params.opt_params.len() < 1 {
         return Err(self::error::ERR_NORECIPIENT);
     }
@@ -288,14 +288,14 @@ pub async fn msg(irc: &Core, user: Arc<User>, mut params: ParsedMsg, msg_type: M
         if let NamedEntity::User(user_weak) = irc.get_name(target)? {
             Weak::upgrade(&user_weak)
                 .unwrap()
-                .send_msg(Arc::clone(&user), &message, &msg_type)
+                .send_msg(&user, &message, &msg_type)
                 .await;
         }
     }
     Ok(())
 }
 
-pub fn user(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
+pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
     // a USER command should have exactly four parameters
     // <username> <hostname> <servername> <realname>,
     // though we ignore the middle two unless a server is
@@ -329,7 +329,7 @@ pub fn user(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ir
             if let Some(nick) = &proto_user.nick {
                 // had nick already, complete registration
                 Some(ClientType::User(irc.register(
-                    &client,
+                    client,
                     nick.clone(),
                     username,
                     real_name,
@@ -354,7 +354,7 @@ pub fn user(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ir
     return Ok(());
 }
 
-pub fn nick(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
+pub fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
     let nick;
     if let Some(n) = params.opt_params.iter().next() {
         nick = n.to_string();
@@ -397,7 +397,7 @@ pub fn nick(irc: &Core, client: Arc<Client>, params: ParsedMsg) -> Result<(), ir
                 let username = proto_user.username.as_ref();
                 let real_name = proto_user.real_name.as_ref();
                 Some(ClientType::User(irc.register(
-                    &client,
+                    client,
                     nick,
                     username.unwrap().to_string(),
                     real_name.unwrap().to_string(),
