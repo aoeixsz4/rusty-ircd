@@ -194,10 +194,16 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Core) -> Result<(), Ge
                  * which is definitely not what we want... need some extra
                  * error composition so irc::command() only returns an actual
                  * error if it's a QUIT/KILL situation */
-                irc::command(&irc, &handler.client, parsed_msg).await?
+                match irc::command(&irc, &handler.client, parsed_msg).await {
+                    Ok(()) => None,
+                    Err(irc_err) => Some(format!("{}", irc_err))
+                }
             }
-            Err(_) => (), /* TODO: add code to convert parse error to IRC message */
+            Err(parse_err) => Some(format!("{}", parse_err)),
         };
+        if let Some(reply_message) = reply {
+            handler.client.send_line(&reply_message);
+        }
     }
     Ok(())
 }
@@ -299,6 +305,7 @@ impl Client {
 
     pub async fn send_line(&self, line: &str) {
         let mut string = String::from(line);
+        println!("sending message {}", line);
         string.push_str("\r\n");
         /* thankfully mpsc::Sender has its own .clone()
          * method, so we don't have to worry about our own

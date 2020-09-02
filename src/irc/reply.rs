@@ -41,3 +41,17 @@
     352 RPL_WHOREPLY "<channel> <user> <host> <server> <nick> <H|G>[*][@|+] :<hopcount> <real name>"
     seems to be some missing...
 */
+
+use std::{error, fmt};
+
+impl fmt::Display for Reply {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Reply::None => write!(f, "300", nick)
+        }
+    }
+}
+
+pub enum Reply {
+    None
+}

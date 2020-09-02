@@ -77,11 +77,13 @@ impl User {
         })
     }
 
-    pub fn set_nick(self: Arc<Self>, name: &str) -> Result<(), ircError> {
+    pub fn set_nick(self: &Arc<Self>, name: &str) -> Result<(), ircError> {
+        let old_nick = self.nick.lock().unwrap().to_string();
         /* ? propagates the potential nick in use error */
         self.irc
-            .insert_name(name, NamedEntity::User(Arc::downgrade(&self)));
+            .insert_name(name, NamedEntity::User(Arc::downgrade(&self)))?;
         *self.nick.lock().unwrap() = name.to_string();
+        self.irc.remove_name(&old_nick)?;
         Ok(())
     }
 
@@ -179,7 +181,7 @@ impl Core {
             hashmap.insert(name.to_string(), item);
             Ok(())
         } else {
-            Err(self::error::ERR_NICKNAMEINUSE)
+            Err(ircError::NicknameInUse(name.to_string()))
         }
     }
 
@@ -187,7 +189,7 @@ impl Core {
         let mut hashmap = self.namespace.lock().unwrap();
         hashmap
             .remove(name)
-            .ok_or_else(|| self::error::ERR_NOSUCHNICK)
+            .ok_or_else(|| ircError::NoSuchNick(name.to_string()))
     }
 
     pub fn get_client(&self, id: &u64) -> Option<Weak<Client>> {
@@ -207,7 +209,7 @@ impl Core {
             Some(NamedEntity::User(user_ptr)) => Ok(NamedEntity::User(Weak::clone(&user_ptr))),
             //Some(NamedEntity::Chan(chan_ptr)) =>
             //  Some(NamedEntity::Chan(Weak::clone(&chan_ptr))),
-            None => Err(self::error::ERR_NOSUCHNICK),
+            None => Err(ircError::NoSuchNick(name.to_string())),
         }
     }
 
@@ -263,14 +265,17 @@ pub async fn command(
             msg(&irc, &client.get_user(), params, MsgType::Notice).await;
             Ok(())
         },
-        "PRIVMSG" | "NOTICE" if ! registered => Err(self::error::ERR_NOTREGISTERED),
-        _ => Err(self::error::ERR_UNKNOWNCOMMAND),
+        "PRIVMSG" | "NOTICE" if ! registered => Err(ircError::NotRegistered),
+        _ => Err(ircError::UnknownCommand(params.command.to_string())),
     }
 }
 
 pub async fn msg(irc: &Core, user: &User, mut params: ParsedMsg, msg_type: MsgType) -> Result<(), ircError> {
     if params.opt_params.len() < 1 {
-        return Err(self::error::ERR_NORECIPIENT);
+        match msg_type {
+            MsgType::Notice => return Err(ircError::NoRecipient("NOTICE".to_string())),
+            MsgType::PrivMsg => return Err(ircError::NoRecipient("PRIVMSG".to_string()))
+        }
     }
     let targets = params.opt_params.remove(0);
 
@@ -279,7 +284,7 @@ pub async fn msg(irc: &Core, user: &User, mut params: ParsedMsg, msg_type: MsgTy
     let message = params.opt_params.join(" ");
     // if there were no more args, message should be an empty String
     if message.len() == 0 {
-        return Err(self::error::ERR_NOTEXTTOSEND);
+        return Err(ircError::NoTextToSend);
     }
     println!("target is {} and content is {}", targets, message);
 
@@ -304,7 +309,7 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
     if args.len() != 4 {
         // strictly speaking this should be an RFC-compliant
         // numeric error ERR_NEEDMOREPARAMS
-        return Err(self::error::ERR_NEEDMOREPARAMS);
+        return Err(ircError::NeedMoreParams("USER".to_string()));
     }
     let username = args[0].clone();
     let real_name = args[3].clone();
@@ -321,7 +326,7 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
         }
         ClientType::User(_user_ref) => {
             // already registered! can't change username
-            return Err(self::error::ERR_ALREADYREGISTRED);
+            return Err(ircError::AlreadyRegistred);
         }
         ClientType::ProtoUser(proto_user_ref) => {
             // got nick already? if so, complete registration
@@ -359,12 +364,12 @@ pub fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
     if let Some(n) = params.opt_params.iter().next() {
         nick = n.to_string();
     } else {
-        return Err(self::error::ERR_NEEDMOREPARAMS);
+        return Err(ircError::NeedMoreParams("NICK".to_string()));
     }
 
     // is this nick already taken?
     if let Ok(_hit) = irc.get_name(&nick) {
-        return Err(self::error::ERR_NICKNAMEINUSE);
+        return Err(ircError::NicknameInUse(nick.to_string()));
     }
 
     // we can return a tuple and send messages after the match
