@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError as mpscSendErr;
 
 /* There are 3 main types of errors we can have here...
  * one is a parsing error, which should be covered by ParseError,
@@ -41,6 +42,7 @@ pub enum GenError {
     Io(ioError),
     Parse(ParseError),
     IRC(ircError),
+    Mpsc(mpscSendErr<String>)
 }
 
 impl fmt::Display for GenError {
@@ -49,6 +51,7 @@ impl fmt::Display for GenError {
             GenError::Io(ref err) => write!(f, "IO Error: {}", err),
             GenError::Parse(ref err) => write!(f, "Parse Error: {}", err),
             GenError::IRC(ref err) => write!(f, "IRC Error: {}", err),
+            GenError::Mpsc(ref err) => write!(f, "MPSC Send Error: {}", err)
         }
     }
 }
@@ -63,6 +66,7 @@ impl error::Error for GenError {
             GenError::Io(ref err) => Some(err),
             GenError::Parse(ref err) => Some(err),
             GenError::IRC(ref err) => Some(err),
+            GenError::Mpsc(ref err) => Some(err)
         }
     }
 }
@@ -82,6 +86,12 @@ impl From<ParseError> for GenError {
 impl From<ircError> for GenError {
     fn from(err: ircError) -> GenError {
         GenError::IRC(err)
+    }
+}
+
+impl From<mpscSendErr<String>> for GenError {
+    fn from(err: mpscSendErr<String>) -> GenError {
+        GenError::Mpsc(err)
     }
 }
 
@@ -147,7 +157,7 @@ pub async fn run_client_handler(
     irc: Arc<Core>,
     tx: MsgSendr,
     sock: OwnedReadHalf,
-) -> Result<(), ioError> {
+) {
     let mut handler = ClientHandler::new(id, host, &irc, tx, sock);
     irc.insert_client(handler.id, Arc::downgrade(&handler.client));
     /* would it be ridic to spawn a new process for every
@@ -163,20 +173,28 @@ pub async fn run_client_handler(
      * asynchronously or not? */
     let res = process_lines(&mut handler, &irc).await;
 
+    /* the main listener loop doesn't .await for the return
+     * of this function, so it doesn't make sense to have any
+     * return value, instead some diagnostics should be printed
+     * here if there is any error */
+    if let Err(err) = res {
+        println!("Client exited with error {}", err);
+    }
+
     /* whether we had an error or a graceful return,
      * we need to do some cleanup, namely: remove the client
      * from the hash table the IRC daemon holds of users/
      * clients */
     match handler.client.get_client_type() {
         ClientType::User(user_ptr) => {
-            irc.remove_name(&user_ptr.get_nick());
+            let nick = user_ptr.get_nick();
+            match irc.remove_name(&nick) {
+                Ok(_name_entity) => println!("Freed user with nick: {}", &nick),
+                Err(err) => println!("Free failed: {}", err)
+            }
         }
         _ => (), // do nothing
     }
-
-    /* should probably have a look at res and do something
-     * with the errors in there, if there are any... */
-    Ok(())
 }
 
 /* Receive and process IRC messages */
@@ -202,7 +220,7 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Core) -> Result<(), Ge
             Err(parse_err) => Some(format!("{}", parse_err)),
         };
         if let Some(reply_message) = reply {
-            handler.client.send_line(&reply_message).await;
+            handler.client.send_line(&reply_message).await?;
         }
     }
     Ok(())
@@ -303,13 +321,13 @@ impl Client {
         &self.irc
     }
 
-    pub async fn send_line(&self, line: &str) {
+    pub async fn send_line(&self, line: &str) -> Result<(), mpscSendErr<String>> {
         let mut string = String::from(line);
         string.push_str("\r\n");
         /* thankfully mpsc::Sender has its own .clone()
          * method, so we don't have to worry about our own
          * Arc/Mutex wrapping, or the problems of holding
          * a mutex across an await */
-        self.tx.clone().send(string).await;
+        self.tx.clone().send(string).await
     }
 }
