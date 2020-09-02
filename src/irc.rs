@@ -17,7 +17,7 @@
 pub mod error;
 pub mod rfc_defs;
 use crate::client;
-use crate::client::{Client, ClientType, Host};
+use crate::client::{Client, ClientType, Host, GenError};
 use crate::irc::error::Error as ircError;
 use crate::parser::ParsedMsg;
 use std::clone::Clone;
@@ -117,7 +117,7 @@ impl User {
         format!("{}!{}@{}", self.get_nick(), self.username, self.get_host_string())
     }
 
-    pub async fn send_msg(&self, src: &User, msg: &str, msg_type: &MsgType) {
+    pub async fn send_msg(&self, src: &User, msg: &str, msg_type: &MsgType) -> Result<(), GenError> {
         let prefix = src.get_prefix();
         let msg_type_str = match *msg_type {
             MsgType::PrivMsg => "PRIVMSG",
@@ -127,7 +127,7 @@ impl User {
         let my_client = self.client.upgrade().unwrap();
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
-        my_client.send_line(&line).await;
+        my_client.send_line(&line).await?; Ok(())
     }
 }
 
@@ -219,7 +219,7 @@ impl Core {
         nick: String,
         username: String,
         real_name: String,
-    ) -> Arc<User> {
+    ) -> Result<Arc<User>, ircError> {
         let host_str = client.get_host_string();
         let host = client.get_host();
         let id = client.get_id();
@@ -237,8 +237,8 @@ impl Core {
             host.clone(),
             client,
         );
-        self.insert_name(&nick, NamedEntity::User(Arc::downgrade(&user)));
-        user
+        self.insert_name(&nick, NamedEntity::User(Arc::downgrade(&user)))?;
+        Ok(user)
     }
 }
 
@@ -262,8 +262,10 @@ pub async fn command(
         "NOTICE" if registered =>
         /* RFC states NOTICE messages don't get replies */
         {
-            msg(&irc, &client.get_user(), params, MsgType::Notice).await;
-            Ok(())
+            match msg(&irc, &client.get_user(), params, MsgType::Notice).await {
+                Ok(()) => Ok(()),
+                Err(err) => { println!("Hiding error from client: {}", err); Ok(()) }
+            }
         },
         "PRIVMSG" | "NOTICE" if ! registered => Err(ircError::NotRegistered),
         _ => Err(ircError::UnknownCommand(params.command.to_string())),
@@ -291,10 +293,15 @@ pub async fn msg(irc: &Core, user: &User, mut params: ParsedMsg, msg_type: MsgTy
     // loop over targets
     for target in targets.split(',') {
         if let NamedEntity::User(user_weak) = irc.get_name(target)? {
-            Weak::upgrade(&user_weak)
+            let result = Weak::upgrade(&user_weak)
                 .unwrap()
                 .send_msg(&user, &message, &msg_type)
                 .await;
+            if let Err(err) = result {
+                // write debugging output, but don't do anything otherwise,
+                // let whatever task handles this client drop it
+                println!("send_message to {} failed: {}", &target, err);
+            }
         }
     }
     Ok(())
@@ -314,7 +321,6 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
     let username = args[0].clone();
     let real_name = args[3].clone();
 
-    // tuple Some(&str), Some(ClientType), bool died
     let result = match client.get_client_type() {
         ClientType::Unregistered => {
             // initiate handshake
@@ -333,12 +339,14 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
             let proto_user = proto_user_ref.lock().unwrap();
             if let Some(nick) = &proto_user.nick {
                 // had nick already, complete registration
-                Some(ClientType::User(irc.register(
-                    client,
-                    nick.clone(),
-                    username,
-                    real_name,
-                )))
+                Some(ClientType::User(
+                    irc.register(
+                        client,
+                        nick.clone(),
+                        username,
+                        real_name,
+                    )?  // propagate the error if it goes wrong 
+                ))      // (nick taken, most likely corner-case)
             // there probably is some message we're meant to
             // return to the client to confirm successful
             // registration...
@@ -401,12 +409,14 @@ pub fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
                 // full registration! wooo
                 let username = proto_user.username.as_ref();
                 let real_name = proto_user.real_name.as_ref();
-                Some(ClientType::User(irc.register(
-                    client,
-                    nick,
-                    username.unwrap().to_string(),
-                    real_name.unwrap().to_string(),
-                )))
+                Some(ClientType::User(
+                    irc.register(
+                        client,
+                        nick,
+                        username.unwrap().to_string(),
+                        real_name.unwrap().to_string(),
+                    )?  // error propagation if registration fails
+                ))
             }
         }
     };
