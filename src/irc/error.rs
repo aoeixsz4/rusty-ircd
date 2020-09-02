@@ -15,27 +15,26 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 use std::{error, fmt};
-type NumReply = usize;
 
 impl error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Error::NoSuchNick(n, txt) => write!(f, "{} {}", n, txt),
-            Error::NoRecipient(n, txt) => write!(f, "{} {}", n, txt),
-            Error::NoTextToSend(n, txt) => write!(f, "{} {}", n, txt),
-            Error::UnknownCommand(n, txt) => write!(f, "{} {}", n, txt),
-            Error::NicknameInUse(n, txt) => write!(f, "{} {}", n, txt),
-            Error::NotRegistered(n, txt) => write!(f, "{} {}", n, txt),
-            Error::NeedMoreParams(n, txt) => write!(f, "{} {}", n, txt),
-            Error::AlreadyRegistred(n, txt) => write!(f, "{} {}", n, txt),
+        match self {
+            Error::NoSuchNick(nick) => write!(f, "401 {} :No such nick/channel", nick),
+            Error::NoRecipient(cmd) => write!(f, "411 :No recipient given ({})", cmd),
+            Error::NoTextToSend => write!(f, "412 :No text to send"),
+            Error::UnknownCommand(cmd) => write!(f, "421 {} :Unknown command", cmd),
+            Error::NicknameInUse(nick) => write!(f, "433 {} :Nickname is already in use", nick),
+            Error::NotRegistered => write!(f, "451, :You have not registered"),
+            Error::NeedMoreParams(cmd) => write!(f, "461, {} :Not enough parameters", cmd),
+            Error::AlreadyRegistred => write!(f, "462 :You may not reregister"),
         }
     }
 }
 
 #[derive(Debug)]
 pub enum Error {
-    NoSuchNick(NumReply, &'static str),
+    NoSuchNick(String),
     //    NoSuchServer(        NumReply, &'static str),
     //    NoSuchChannel(       NumReply, &'static str),
     //    CannotSendToChan(    NumReply, &'static str),
@@ -43,17 +42,17 @@ pub enum Error {
     //    WasNoSuchNick(       NumReply, &'static str),
     //    TooManyTargets(      NumReply, &'static str),
     //    NoOrigin(            NumReply, &'static str),
-    NoRecipient(NumReply, &'static str),
-    NoTextToSend(NumReply, &'static str),
+    NoRecipient(String),
+    NoTextToSend,
     //    NoTopLevel(          NumReply, &'static str),
     //    WildTopLevel(        NumReply, &'static str),
-    UnknownCommand(NumReply, &'static str),
+    UnknownCommand(String),
     //    NoMotd(              NumReply, &'static str),
     //    NoAdminInfo(         NumReply, &'static str),
     //    FileError(           NumReply, &'static str),
     //    NoNickNameGiven(     NumReply, &'static str),
     //    ErroneusNickname(    NumReply, &'static str),
-    NicknameInUse(NumReply, &'static str),
+    NicknameInUse(String),
     //    NickCollision(       NumReply, &'static str),
     //    UserNotInChannel(    NumReply, &'static str),
     //    NotOnChannel(        NumReply, &'static str),
@@ -61,9 +60,9 @@ pub enum Error {
     //    NoLogin(             NumReply, &'static str),
     //    SummonDisabled(      NumReply, &'static str),
     //    UsersDisabled(       NumReply, &'static str),
-    NotRegistered(NumReply, &'static str),
-    NeedMoreParams(NumReply, &'static str),
-    AlreadyRegistred(NumReply, &'static str),
+    NotRegistered,
+    NeedMoreParams(String),
+    AlreadyRegistred,
     //    NoPermForHost(       NumReply, &'static str),
     //    PasswdmisMatch(      NumReply, &'static str),
     //    YoureBannedCreep(    NumReply, &'static str),
@@ -81,7 +80,7 @@ pub enum Error {
     //    UsersDontMatch(      NumReply, &'static str),
 }
 
-pub const ERR_NOSUCHNICK: Error = Error::NoSuchNick(401, "<nickname> :No such nick/channel");
+//pub const ERR_NOSUCHNICK: Error = Error::NoSuchNick(401, "<nickname> :No such nick/channel");
 //pub const ERR_: Error = NoSuchServer(        402, "<server name> :No such server"),
 //pub const ERR_: Error = NoSuchChannel(       403, "<channel name> :No such channel"),
 //pub const ERR_: Error = CannotSendToChan(    404, "<channel name> :Cannot send to channel"),
@@ -89,18 +88,18 @@ pub const ERR_NOSUCHNICK: Error = Error::NoSuchNick(401, "<nickname> :No such ni
 //pub const ERR_: Error = WasNoSuchNick(       406, "<nickname> :There was no such nickname"),
 //pub const ERR_: Error = TooManyTargets(      407, "<target> :Duplicate recipients. No message delivered"),
 //pub const ERR_: Error = NoOrigin(            409, ":no origin specified"),
-pub const ERR_NORECIPIENT: Error = Error::NoRecipient(411, ":No recipient given (<command>)");
-pub const ERR_NOTEXTTOSEND: Error = Error::NoTextToSend(412, ":No text to send");
+//pub const ERR_NORECIPIENT: Error = Error::NoRecipient(411, ":No recipient given (<command>)");
+//pub const ERR_NOTEXTTOSEND: Error = Error::NoTextToSend(412, ":No text to send");
 //pub const ERR_: Error = NoTopLevel(          413, "<mask> :No toplevel domain specified"),
 //pub const ERR_: Error = WildTopLevel(        414, "<mask> :Wildcard in toplevel domain"),
-pub const ERR_UNKNOWNCOMMAND: Error = Error::UnknownCommand(421, "<command> :Unknown command");
+//pub const ERR_UNKNOWNCOMMAND: Error = Error::UnknownCommand(421, "<command> :Unknown command");
 //pub const ERR_: Error = NoMotd(              422, ":MOTD File is missing"),
 //pub const ERR_: Error = NoAdminInfo(         423, "<server> :No administrative info available"),
 //pub const ERR_: Error = FileError(           424, ":File error doing <file op> on <file>"),
 //pub const ERR_: Error = NoNickNameGiven(     431, ":No nickname given"),
 //pub const ERR_: Error = ErroneusNickname(    432, "<nick> :Erroneus nickname"),
-pub const ERR_NICKNAMEINUSE: Error =
-    Error::NicknameInUse(433, "<nick> :Nickname is already in use");
+//pub const ERR_NICKNAMEINUSE: Error =
+//    Error::NicknameInUse(433, "<nick> :Nickname is already in use");
 //pub const ERR_: Error = NickCollision(       436, "<nick> :Nickname collision KILL"),
 //pub const ERR_: Error = UserNotInChannel(    441, "<nick> <channel> :They aren't on that channel"),
 //pub const ERR_: Error = NotOnChannel(        442, "<channel> :You're not on that channel"),
@@ -108,10 +107,10 @@ pub const ERR_NICKNAMEINUSE: Error =
 //pub const ERR_: Error = NoLogin(             444, "<user> :User not logged in"),
 //pub const ERR_: Error = SummonDisabled(      445, ":SUMMON has been disabled"),
 //pub const ERR_: Error = UsersDisabled(       446, ":USERS has been disabled"),
-pub const ERR_NOTREGISTERED: Error = Error::NotRegistered(451, ":You have not registered");
-pub const ERR_NEEDMOREPARAMS: Error =
-    Error::NeedMoreParams(461, "<command> :Not enough parameters");
-pub const ERR_ALREADYREGISTRED: Error = Error::AlreadyRegistred(462, ":You may not reregister");
+//pub const ERR_NOTREGISTERED: Error = Error::NotRegistered(451, ":You have not registered");
+//pub const ERR_NEEDMOREPARAMS: Error =
+//    Error::NeedMoreParams(461, "<command> :Not enough parameters");
+//pub const ERR_ALREADYREGISTRED: Error = Error::AlreadyRegistred(462, ":You may not reregister");
 //pub const ERR_: Error = NoPermForHost(       463, ":Your host isn't among the privileged"),
 //pub const ERR_: Error = PasswdmisMatch(      464, ":Password incorrect"),
 //pub const ERR_: Error = YoureBannedCreep(    465, ":You are banned from this server"),
