@@ -25,8 +25,8 @@ impl fmt::Display for Error {
             Error::NoTextToSend => write!(f, "412 :No text to send"),
             Error::UnknownCommand(cmd) => write!(f, "421 {} :Unknown command", cmd),
             Error::NicknameInUse(nick) => write!(f, "433 {} :Nickname is already in use", nick),
-            Error::NotRegistered => write!(f, "451, :You have not registered"),
-            Error::NeedMoreParams(cmd) => write!(f, "461, {} :Not enough parameters", cmd),
+            Error::NotRegistered => write!(f, "451 :You have not registered"),
+            Error::NeedMoreParams(cmd) => write!(f, "461 {} :Not enough parameters", cmd),
             Error::AlreadyRegistred => write!(f, "462 :You may not reregister"),
         }
     }

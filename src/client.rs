@@ -202,7 +202,7 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Core) -> Result<(), Ge
             Err(parse_err) => Some(format!("{}", parse_err)),
         };
         if let Some(reply_message) = reply {
-            handler.client.send_line(&reply_message);
+            handler.client.send_line(&reply_message).await;
         }
     }
     Ok(())
@@ -305,7 +305,6 @@ impl Client {
 
     pub async fn send_line(&self, line: &str) {
         let mut string = String::from(line);
-        println!("sending message {}", line);
         string.push_str("\r\n");
         /* thankfully mpsc::Sender has its own .clone()
          * method, so we don't have to worry about our own
