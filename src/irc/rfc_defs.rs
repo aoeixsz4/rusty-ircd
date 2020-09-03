@@ -16,17 +16,17 @@
 */
 pub const MAX_MSG_SIZE: usize = 512;
 pub const MAX_MSG_PARAMS: usize = 15; // including tailing, but not including COMMAND
-pub const LETTER: &'static str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-pub const UPPER: &'static str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-pub const LOWER: &'static str = "abcdefghijklmnopqrstuvwxyz";
-pub const SPECIAL: &'static str = "[]\\`_^{|}";
-pub const DIGIT: &'static str = "0123456789";
-pub const HEXDIGIT: &'static str = "0123456789ABCDEF";
+pub const LETTER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+pub const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+pub const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
+pub const SPECIAL: &str = "[]\\`_^{|}";
+pub const DIGIT: &str = "0123456789";
+pub const HEXDIGIT: &str = "0123456789ABCDEF";
 
 // user can have any character which is not in the set CONTROL, or an '@'
-pub const CONTROL: &'static str = "\0\r\n :";
-pub const NOT_USER: &'static str = "\0\r\n @";
-pub const NOT_CHANSTRING: &'static str = "\0\r\n\x07, :";
+pub const CONTROL: &str = "\0\r\n :";
+pub const NOT_USER: &str = "\0\r\n @";
+pub const NOT_CHANSTRING: &str = "\0\r\n\x07, :";
 
 // this can probably be generalised a bit
 fn matches_allowed(msg: &str, allowed: &str) -> bool {
@@ -59,7 +59,7 @@ pub fn valid_ipv4_addr(host_addr: &str) -> bool {
         // tokenizing 127...0 would give us empty string slices
         // and we would consider that invalid
         for item in toks.iter() {
-            if item.len() < 1 || item.len() > 3 || !matches_allowed(item, DIGIT) {
+            if item.is_empty() || item.len() > 3 || !matches_allowed(item, DIGIT) {
                 return false;
             }
         }
@@ -80,14 +80,14 @@ pub fn valid_ipv6_addr(host_addr: &str) -> bool {
     if toks.len() == 8 {
         for item in toks.iter() {
             // no empty tokens please...
-            if item.len() == 0 || !matches_allowed(item, HEXDIGIT) {
+            if item.is_empty() || !matches_allowed(item, HEXDIGIT) {
                 return false;
             }
         }
         true
     } else if toks.len() == 7 {
         for (i, item) in toks.iter().enumerate() {
-            if item.len() == 0 {
+            if item.is_empty() {
                 return false;
             } else if i < 5 && &item[..] != "0" {
                 return false;
@@ -108,7 +108,7 @@ pub fn valid_ipv6_addr(host_addr: &str) -> bool {
 // aug BNF = shortname *( "." shortname )
 pub fn valid_hostname(hostname: &str) -> bool {
     // rfc has an additional requirement that a hostname is max 63 chars
-    if hostname.len() < 1 || hostname.len() > 63 {
+    if hostname.is_empty() || hostname.len() > 63 {
         return false;
     }
 
@@ -116,7 +116,7 @@ pub fn valid_hostname(hostname: &str) -> bool {
     // and each string enclosed within should be a valid 'shortname'
     let toks: Vec<&str> = hostname.split('.').collect();
     for item in toks.iter() {
-        if item.len() == 0 || !valid_shortname(item) {
+        if item.is_empty() || !valid_shortname(item) {
             return false;
         }
     }
@@ -130,7 +130,7 @@ pub fn valid_hostname(hostname: &str) -> bool {
 // but i think maybe it's supposed to mean "-" shouldn't be at the end OR start
 pub fn valid_shortname(shortname: &str) -> bool {
     // exception if first or last letter is "-"
-    if shortname.len() == 0 {
+    if shortname.is_empty() {
         return false;
     }
     if &shortname[..1] != "-" && &shortname[..shortname.len() - 1] != "-" {
@@ -147,12 +147,10 @@ pub fn valid_shortname(shortname: &str) -> bool {
 // first length check might be redundant, we shouldn't really be given zero-length slices
 // RFC defition: at least one a-zA-Z letter, OR 3 digits
 pub fn valid_command(cmd_string: &str) -> bool {
-    if cmd_string.len() >= 1 && matches_allowed(cmd_string, LETTER) {
-        true
-    } else if cmd_string.len() == 3 && matches_allowed(cmd_string, DIGIT) {
+    if cmd_string.is_empty() && matches_allowed(cmd_string, LETTER) {
         true
     } else {
-        false
+        cmd_string.len() == 3 && matches_allowed(cmd_string, DIGIT)
     }
 }
 
@@ -160,7 +158,7 @@ pub fn valid_command(cmd_string: &str) -> bool {
 // user can contain any character except NUL, CR, LF, ' ', or @
 pub fn valid_user(username: &str) -> bool {
     // just in case...
-    if username.len() > 0 {
+    if !username.is_empty() {
         !matches_disallowed(username, NOT_USER)
     } else {
         false
@@ -193,7 +191,7 @@ pub fn valid_channel(channame: &str) -> bool {
 
     // still need to check the chanstrings...
     for item in rest.splitn(2, ':') {
-        if item.len() == 0 || !valid_chanstring(item) {
+        if item.is_empty() || !valid_chanstring(item) {
             return false;
         }
     }
@@ -222,7 +220,7 @@ pub fn valid_chanstring(chanstring: &str) -> bool {
 // rfc states nick should be max 9 in length,
 // pretty sure I've seen far longer nicks on most IRC servers though
 pub fn valid_nick(nick: &str) -> bool {
-    if nick.len() > 9 || nick.len() < 1 {
+    if nick.len() > 9 || nick.is_empty() {
         return false;
     }
 

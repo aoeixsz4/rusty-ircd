@@ -21,10 +21,14 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::NoSuchNick(nick) => write!(f, "401 {} :No such nick/channel", nick),
+            Error::NoSuchChannel(chan) => write!(f, "403 {} :No such channel", chan),
+            Error::CannotSendToChan(chan) => write!(f, "404 {} :Cannot send to channel", chan),
             Error::NoRecipient(cmd) => write!(f, "411 :No recipient given ({})", cmd),
             Error::NoTextToSend => write!(f, "412 :No text to send"),
             Error::UnknownCommand(cmd) => write!(f, "421 {} :Unknown command", cmd),
+            Error::ErroneusNickname(nick) => write!(f, "432 {} :Erroneous nickname", nick),
             Error::NicknameInUse(nick) => write!(f, "433 {} :Nickname is already in use", nick),
+            Error::NotOnChannel(chan) => write!(f, "442 {} :You're not on that channel", chan),
             Error::NotRegistered => write!(f, "451 :You have not registered"),
             Error::NeedMoreParams(cmd) => write!(f, "461 {} :Not enough parameters", cmd),
             Error::AlreadyRegistred => write!(f, "462 :You may not reregister"),
@@ -36,8 +40,8 @@ impl fmt::Display for Error {
 pub enum Error {
     NoSuchNick(String),
     //    NoSuchServer(        NumReply, &'static str),
-    //    NoSuchChannel(       NumReply, &'static str),
-    //    CannotSendToChan(    NumReply, &'static str),
+    NoSuchChannel(String),
+    CannotSendToChan(String),
     //    TooManyChannels(     NumReply, &'static str),
     //    WasNoSuchNick(       NumReply, &'static str),
     //    TooManyTargets(      NumReply, &'static str),
@@ -51,11 +55,11 @@ pub enum Error {
     //    NoAdminInfo(         NumReply, &'static str),
     //    FileError(           NumReply, &'static str),
     //    NoNickNameGiven(     NumReply, &'static str),
-    //    ErroneusNickname(    NumReply, &'static str),
+    ErroneusNickname(String),
     NicknameInUse(String),
     //    NickCollision(       NumReply, &'static str),
     //    UserNotInChannel(    NumReply, &'static str),
-    //    NotOnChannel(        NumReply, &'static str),
+    NotOnChannel(String),
     //    UserOnChannel(       NumReply, &'static str),
     //    NoLogin(             NumReply, &'static str),
     //    SummonDisabled(      NumReply, &'static str),
@@ -78,6 +82,7 @@ pub enum Error {
     //    NoOperHost(          NumReply, &'static str),
     //    UModeUnknownFlag(    NumReply, &'static str),
     //    UsersDontMatch(      NumReply, &'static str),
+    //BadChanMask(String)
 }
 
 //pub const ERR_NOSUCHNICK: Error = Error::NoSuchNick(401, "<nickname> :No such nick/channel");

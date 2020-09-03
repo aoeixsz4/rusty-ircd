@@ -32,7 +32,7 @@ use tokio::task;
 
 fn get_host(ip_addr: IpAddr) -> Result<Host, ioError> {
     match lookup_addr(&ip_addr) {
-        Ok(h) => Ok(Host::Hostname(h.to_string())),
+        Ok(h) => Ok(Host::Hostname(h)),
         Err(_) => Ok(Host::HostAddr(ip_addr)),
     }
 }

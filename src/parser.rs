@@ -146,20 +146,18 @@ fn parse_prefix(msg: &str) -> Result<MsgPrefix, ParseError> {
                 Ok(MsgPrefix::NickHost(nick, parse_host(host)?))
             }
         }
+    } else if !rfc::valid_nick(name) {
+        // server case
+        Ok(MsgPrefix::Host(parse_host(name)?)) // we got a host :D
     } else {
-        if !rfc::valid_nick(name) {
-            // server case
-            Ok(MsgPrefix::Host(parse_host(name)?)) // we got a host :D
-        } else {
-            // if we didn't get an @, and the nick is valid
-            // we can't actually be totally sure if we have a
-            // nick or a host - tho we could rule out host with additional checks i suppose
-            // in this case we keep the match thing because we don't actually want to
-            // treat this "error" as an error
-            match parse_host(name) {
-                Ok(_) => Ok(MsgPrefix::Name(name.to_string())), // valid as host OR nick
-                Err(_) => Ok(MsgPrefix::Nick(name.to_string())), // only valid as nick
-            }
+        // if we didn't get an @, and the nick is valid
+        // we can't actually be totally sure if we have a
+        // nick or a host - tho we could rule out host with additional checks i suppose
+        // in this case we keep the match thing because we don't actually want to
+        // treat this "error" as an error
+        match parse_host(name) {
+            Ok(_) => Ok(MsgPrefix::Name(name.to_string())), // valid as host OR nick
+            Err(_) => Ok(MsgPrefix::Nick(name.to_string())), // only valid as nick
         }
     }
 }
