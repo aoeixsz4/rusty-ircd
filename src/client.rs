@@ -15,9 +15,8 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 extern crate tokio;
-#[macro_use]
-use crate::irc::{self, Core, User};
 use crate::irc::error::Error as ircError;
+use crate::irc::{self, Core, User};
 use crate::parser::{parse_message, ParseError};
 use std::error;
 use std::fmt;
@@ -42,7 +41,7 @@ pub enum GenError {
     Io(ioError),
     Parse(ParseError),
     IRC(ircError),
-    Mpsc(mpscSendErr<String>)
+    Mpsc(mpscSendErr<String>),
 }
 
 impl fmt::Display for GenError {
@@ -51,7 +50,7 @@ impl fmt::Display for GenError {
             GenError::Io(ref err) => write!(f, "IO Error: {}", err),
             GenError::Parse(ref err) => write!(f, "Parse Error: {}", err),
             GenError::IRC(ref err) => write!(f, "IRC Error: {}", err),
-            GenError::Mpsc(ref err) => write!(f, "MPSC Send Error: {}", err)
+            GenError::Mpsc(ref err) => write!(f, "MPSC Send Error: {}", err),
         }
     }
 }
@@ -66,7 +65,7 @@ impl error::Error for GenError {
             GenError::Io(ref err) => Some(err),
             GenError::Parse(ref err) => Some(err),
             GenError::IRC(ref err) => Some(err),
-            GenError::Mpsc(ref err) => Some(err)
+            GenError::Mpsc(ref err) => Some(err),
         }
     }
 }
@@ -185,15 +184,12 @@ pub async fn run_client_handler(
      * we need to do some cleanup, namely: remove the client
      * from the hash table the IRC daemon holds of users/
      * clients */
-    match handler.client.get_client_type() {
-        ClientType::User(user_ptr) => {
-            let nick = user_ptr.get_nick();
-            match irc.remove_name(&nick) {
-                Ok(_name_entity) => println!("Freed user with nick: {}", &nick),
-                Err(err) => println!("Free failed: {}", err)
-            }
+    if let ClientType::User(user_ptr) = handler.client.get_client_type() {
+        let nick = user_ptr.get_nick();
+        match irc.remove_name(&nick) {
+            Ok(_name_entity) => println!("Freed user with nick: {}", &nick),
+            Err(err) => println!("Free failed: {}", err),
         }
-        _ => (), // do nothing
     }
 }
 
@@ -214,7 +210,7 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Core) -> Result<(), Ge
                  * error if it's a QUIT/KILL situation */
                 match irc::command(&irc, &handler.client, parsed_msg).await {
                     Ok(()) => None,
-                    Err(irc_err) => Some(format!("{}", irc_err))
+                    Err(irc_err) => Some(format!("{}", irc_err)),
                 }
             }
             Err(parse_err) => Some(format!("{}", parse_err)),
@@ -280,7 +276,7 @@ impl Client {
     // don't call this unless is_registered returns true
     pub fn get_user(&self) -> Arc<User> {
         match self.get_client_type() {
-            ClientType::User(u_ptr) => return Arc::clone(&u_ptr),
+            ClientType::User(u_ptr) => Arc::clone(&u_ptr),
             _ => panic!("impossible"),
         }
     }
@@ -319,6 +315,14 @@ impl Client {
 
     pub fn get_irc(&self) -> &Arc<Core> {
         &self.irc
+    }
+
+    pub async fn send_err(&self, err: ircError) -> Result<(), GenError> {
+        let line = format!("{}", err);
+        /* passing to an async fn and awaiting on it is gonna
+         * cause lifetime problems with a &str... */
+        self.send_line(&line).await?;
+        Ok(())
     }
 
     pub async fn send_line(&self, line: &str) -> Result<(), mpscSendErr<String>> {

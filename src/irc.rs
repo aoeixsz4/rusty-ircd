@@ -14,11 +14,16 @@
 *  You should have received a copy of the GNU Lesser General Public License
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
+pub mod chan;
 pub mod error;
+pub mod reply;
 pub mod rfc_defs;
 use crate::client;
-use crate::client::{Client, ClientType, Host, GenError};
+use crate::client::{Client, ClientType, GenError, Host};
+use crate::irc::chan::{ChanFlags, Channel};
 use crate::irc::error::Error as ircError;
+use crate::irc::reply::Reply as ircReply;
+use crate::irc::rfc_defs as rfc;
 use crate::parser::ParsedMsg;
 use std::clone::Clone;
 use std::collections::HashMap;
@@ -26,13 +31,15 @@ use std::sync::{Arc, Mutex, Weak};
 
 #[derive(Debug)]
 pub enum NamedEntity {
-    User(Weak<User>), //Chan(Weak<Channel>)
+    User(Weak<User>),
+    Chan(Arc<Channel>),
 }
 
 impl Clone for NamedEntity {
     fn clone(&self) -> Self {
         match self {
             NamedEntity::User(ptr) => NamedEntity::User(Weak::clone(&ptr)),
+            NamedEntity::Chan(ptr) => NamedEntity::Chan(Arc::clone(&ptr)),
         }
     }
 }
@@ -114,20 +121,88 @@ impl User {
     }
 
     pub fn get_prefix(&self) -> String {
-        format!("{}!{}@{}", self.get_nick(), self.username, self.get_host_string())
+        format!(
+            "{}!{}@{}",
+            self.get_nick(),
+            self.username,
+            self.get_host_string()
+        )
     }
 
-    pub async fn send_msg(&self, src: &User, msg: &str, msg_type: &MsgType) -> Result<(), GenError> {
+    pub async fn send_msg(
+        &self,
+        src: &User,
+        target: &str,
+        msg: &str,
+        msg_type: &MsgType,
+    ) -> Result<(), GenError> {
         let prefix = src.get_prefix();
-        let msg_type_str = match *msg_type {
+        let command_str = match *msg_type {
             MsgType::PrivMsg => "PRIVMSG",
-            MsgType::Notice => "NOTICE"
+            MsgType::Notice => "NOTICE",
         };
-        let line = format!(":{} {} :{}", &prefix, msg_type_str, msg);
+        let line = format!(":{} {} {} :{}", &prefix, command_str, target, msg);
         let my_client = self.client.upgrade().unwrap();
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
-        my_client.send_line(&line).await?; Ok(())
+        my_client.send_line(&line).await?;
+        Ok(())
+    }
+
+    pub async fn send_err(&self, err: ircError) -> Result<(), GenError> {
+        let line = format!("{}", err);
+        let my_client = self.client.upgrade().unwrap();
+        /* passing to an async fn and awaiting on it is gonna
+         * cause lifetime problems with a &str... */
+        my_client.send_line(&line).await?;
+        Ok(())
+    }
+
+    pub async fn send_rpl(&self, reply: ircReply) -> Result<(), GenError> {
+        /* passing to an async fn and awaiting on it is gonna
+         * cause lifetime problems with a &str... */
+        let line = format!("{}", reply);
+        if line.len() > rfc::MAX_MSG_SIZE - 2 {
+            match reply {
+                /* not all can be recursed */
+                ircReply::NameReply(chan, mut nick_vec) => {
+                    /* "353 {} :{}<CR><LF>" */
+                    let overhead = rfc::MAX_MSG_PARAMS - (8 + chan.len());
+                    let mut vec_len = nick_vec.len();
+                    let mut i = 0;
+                    let mut sum = 0;
+
+                    /* count how many strings we can fit */
+                    while i < vec_len {
+                        if sum + nick_vec[i].len() >= overhead {
+                            let temp = nick_vec.split_off(i);
+                            let line = format!("{}", ircReply::NameReply(chan.clone(), nick_vec));
+                            let my_client = self.client.upgrade().unwrap();
+                            my_client.send_line(&line).await?;
+                            nick_vec = temp;
+                            i = 0;
+                            sum = 0;
+                            vec_len = nick_vec.len();
+                        }
+                    }
+
+                    Ok(())
+                }
+                _ => Ok(()),
+            }
+        } else {
+            let my_client = self.client.upgrade().unwrap();
+            my_client.send_line(&line).await?;
+            Ok(())
+        }
+    }
+
+    pub async fn send_line(&self, line: &str) -> Result<(), GenError> {
+        let my_client = self.client.upgrade().unwrap();
+        /* passing to an async fn and awaiting on it is gonna
+         * cause lifetime problems with a &str... */
+        my_client.send_line(line).await?;
+        Ok(())
     }
 }
 
@@ -204,13 +279,87 @@ impl Core {
         self.clients.lock().unwrap().remove(id)
     }
 
-    pub fn get_name(&self, name: &str) -> Result<NamedEntity, ircError> {
-        match self.namespace.lock().unwrap().get(name) {
-            Some(NamedEntity::User(user_ptr)) => Ok(NamedEntity::User(Weak::clone(&user_ptr))),
-            //Some(NamedEntity::Chan(chan_ptr)) =>
-            //  Some(NamedEntity::Chan(Weak::clone(&chan_ptr))),
-            None => Err(ircError::NoSuchNick(name.to_string())),
+    pub fn get_name(&self, name: &str) -> Option<NamedEntity> {
+        self.namespace.lock().unwrap().get(name).cloned()
+    }
+
+    pub fn get_nick(&self, nick: &str) -> Result<NamedEntity, ircError> {
+        if let Some(named_entity) = self.get_name(nick) {
+            Ok(named_entity)
+        } else {
+            Err(ircError::NoSuchNick(nick.to_string()))
         }
+    }
+
+    pub fn get_chan(&self, chanmask: &str) -> Option<Arc<Channel>> {
+        if let Some(NamedEntity::Chan(chan)) = self.get_name(chanmask) {
+            Some(chan)
+        } else {
+            None
+        }
+    }
+
+    pub async fn part_chan(
+        &self,
+        chanmask: &str,
+        user: &Arc<User>,
+        part_msg: &str,
+    ) -> Result<(), GenError> {
+        if let Some(chan) = self.get_chan(chanmask) {
+            if !chan.is_joined(user) {
+                user.send_err(ircError::NotOnChannel(chanmask.to_string()))
+                    .await
+            } else {
+                if let Some(key) = chan.get_user_key(user) {
+                    chan.rm_key(&key);
+                }
+                if chan.is_empty() {
+                    self.remove_name(chanmask)?;
+                    Ok(())
+                } else {
+                    chan.notify_part(user, chanmask, part_msg).await
+                }
+            }
+        } else {
+            user.send_err(ircError::NoSuchChannel(chanmask.to_string()))
+                .await
+        }
+    }
+
+    pub async fn join_chan(&self, chanmask: &str, user: &Arc<User>) -> Result<(), GenError> {
+        if !rfc::valid_channel(chanmask) {
+            return user
+                .send_err(ircError::NoSuchChannel(chanmask.to_string()))
+                .await;
+        }
+        let channel = self.get_chan(chanmask);
+        let chan = if let Some(chan) = channel {
+            /* need to check if user is already in chan */
+            if chan.is_joined(user) {
+                return Ok(());
+            }
+            chan.add_user(user, ChanFlags::None);
+            if let Err(err) = chan.notify_join(user, chanmask).await {
+                println!("encountered error: {}", err);
+            }
+            chan
+        } else {
+            let chan = Arc::new(Channel::new(chanmask));
+            self.insert_name(chanmask, NamedEntity::Chan(Arc::clone(&chan)))?; // what happens if this error does occur?
+            chan.add_user(user, ChanFlags::Op);
+            chan
+        };
+        user.send_rpl(ircReply::Topic(chanmask.to_string(), chan.get_topic()))
+            .await?;
+
+        user.send_rpl(ircReply::NameReply(
+            chanmask.to_string(),
+            chan.gen_sorted_nick_list(),
+        ))
+        .await?;
+
+        user.send_rpl(ircReply::EndofNames(chanmask.to_string()))
+            .await
     }
 
     pub fn register(
@@ -233,7 +382,7 @@ impl Core {
             irc,
             nick.to_string(),
             username,
-            real_name.clone(),
+            real_name,
             host.clone(),
             client,
         );
@@ -245,38 +394,88 @@ impl Core {
 #[derive(Debug)]
 pub enum MsgType {
     PrivMsg,
-    Notice
+    Notice,
 }
 
-pub async fn command(
-    irc: &Core,
-    client: &Arc<Client>,
-    params: ParsedMsg,
-) -> Result<(), ircError> {
+pub async fn command(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), GenError> {
     let registered = client.is_registered();
+    let cmd = params.command.to_ascii_uppercase();
 
-    match &params.command[..] {
-        "NICK" => nick(irc, client, params),
-        "USER" => user(irc, client, params),
-        "PRIVMSG" if registered => Ok(msg(irc, &client.get_user(), params, MsgType::PrivMsg).await?),
-        "NOTICE" if registered =>
-        /* RFC states NOTICE messages don't get replies */
-        {
-            match msg(&irc, &client.get_user(), params, MsgType::Notice).await {
-                Ok(()) => Ok(()),
-                Err(err) => { println!("Hiding error from client: {}", err); Ok(()) }
-            }
-        },
-        "PRIVMSG" | "NOTICE" if ! registered => Err(ircError::NotRegistered),
-        _ => Err(ircError::UnknownCommand(params.command.to_string())),
+    match &cmd[..] {
+        "NICK" => nick(irc, client, params).await,
+        "USER" => user(irc, client, params).await,
+        "PRIVMSG" if registered => msg(irc, &client.get_user(), params, MsgType::PrivMsg).await,
+        "NOTICE" if registered => msg(&irc, &client.get_user(), params, MsgType::Notice).await,
+        "JOIN" if registered => join(&irc, &client.get_user(), params).await,
+        "PART" if registered => part(&irc, &client.get_user(), params).await,
+        "PART" | "JOIN" | "PRIVMSG" | "NOTICE" if !registered => {
+            client.send_err(ircError::NotRegistered).await
+        }
+        _ => {
+            client
+                .send_err(ircError::UnknownCommand(params.command.to_string()))
+                .await
+        }
     }
 }
 
-pub async fn msg(irc: &Core, user: &User, mut params: ParsedMsg, msg_type: MsgType) -> Result<(), ircError> {
-    if params.opt_params.len() < 1 {
+pub async fn join(irc: &Core, user: &Arc<User>, mut params: ParsedMsg) -> Result<(), GenError> {
+    if params.opt_params.is_empty() {
+        return user
+            .send_err(ircError::NeedMoreParams("JOIN".to_string()))
+            .await;
+    }
+
+    /* JOIN can take a second argument. The format is:
+     * JOIN comma,sep.,chan,list comma,sep.,key,list
+     * but I'll leave key implementation til later */
+    let targets = params.opt_params.remove(0);
+    for target in targets.split(',') {
+        let result = irc.join_chan(&target, user).await;
+        // error here is probably I/O - dropped client
+        if let Err(err) = result {
+            println!("another client pooped out: {}", err);
+        }
+    }
+    Ok(())
+}
+
+pub async fn part(irc: &Core, user: &Arc<User>, mut params: ParsedMsg) -> Result<(), GenError> {
+    if params.opt_params.is_empty() {
+        return user
+            .send_err(ircError::NeedMoreParams("PART".to_string()))
+            .await;
+    }
+
+    let targets = params.opt_params.remove(0);
+    let part_msg = if params.opt_params.is_empty() {
+        String::from("")
+    } else {
+        params.opt_params.remove(0)
+    };
+    for target in targets.split(',') {
+        let result = irc.part_chan(&target, user, &part_msg).await;
+        // error here is probably I/O - dropped client
+        if let Err(err) = result {
+            println!("another client pooped out: {}", err);
+        }
+    }
+    Ok(())
+}
+pub async fn msg(
+    irc: &Core,
+    user: &User,
+    mut params: ParsedMsg,
+    msg_type: MsgType,
+) -> Result<(), GenError> {
+    if params.opt_params.is_empty() {
         match msg_type {
-            MsgType::Notice => return Err(ircError::NoRecipient("NOTICE".to_string())),
-            MsgType::PrivMsg => return Err(ircError::NoRecipient("PRIVMSG".to_string()))
+            MsgType::Notice => return Ok(()),
+            MsgType::PrivMsg => {
+                return user
+                    .send_err(ircError::NoRecipient("PRIVMSG".to_string()))
+                    .await
+            }
         }
     }
     let targets = params.opt_params.remove(0);
@@ -285,29 +484,44 @@ pub async fn msg(irc: &Core, user: &User, mut params: ParsedMsg, msg_type: MsgTy
     // concatenate the remainder to one string
     let message = params.opt_params.join(" ");
     // if there were no more args, message should be an empty String
-    if message.len() == 0 {
-        return Err(ircError::NoTextToSend);
+    if message.is_empty() {
+        return Err(GenError::from(ircError::NoTextToSend));
     }
     println!("target is {} and content is {}", targets, message);
 
     // loop over targets
     for target in targets.split(',') {
-        if let NamedEntity::User(user_weak) = irc.get_name(target)? {
-            let result = Weak::upgrade(&user_weak)
-                .unwrap()
-                .send_msg(&user, &message, &msg_type)
-                .await;
-            if let Err(err) = result {
-                // write debugging output, but don't do anything otherwise,
-                // let whatever task handles this client drop it
-                println!("send_message to {} failed: {}", &target, err);
+        match irc.get_nick(target)? {
+            NamedEntity::User(user_weak) => {
+                let result = Weak::upgrade(&user_weak)
+                    .unwrap()
+                    .send_msg(&user, &target, &message, &msg_type)
+                    .await;
+                if let Err(err) = result {
+                    // write debugging output, but don't do anything otherwise,
+                    // let whatever task handles this client drop it
+                    println!("send_message to {} failed: {}", &target, err);
+                }
+            }
+            NamedEntity::Chan(chan) => {
+                let result = chan.send_msg(&user, &target, &message, &msg_type).await;
+                if let Err(err) = result {
+                    match msg_type {
+                        MsgType::PrivMsg => user.send_err(err).await?,
+                        MsgType::Notice => println!(
+                            "not sending error {} to user {}",
+                            err,
+                            user.nick.lock().unwrap().to_string()
+                        ),
+                    }
+                }
             }
         }
     }
     Ok(())
 }
 
-pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
+pub async fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), GenError> {
     // a USER command should have exactly four parameters
     // <username> <hostname> <servername> <realname>,
     // though we ignore the middle two unless a server is
@@ -316,7 +530,9 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
     if args.len() != 4 {
         // strictly speaking this should be an RFC-compliant
         // numeric error ERR_NEEDMOREPARAMS
-        return Err(ircError::NeedMoreParams("USER".to_string()));
+        return client
+            .send_err(ircError::NeedMoreParams("USER".to_string()))
+            .await;
     }
     let username = args[0].clone();
     let real_name = args[3].clone();
@@ -332,7 +548,7 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
         }
         ClientType::User(_user_ref) => {
             // already registered! can't change username
-            return Err(ircError::AlreadyRegistred);
+            return client.send_err(ircError::AlreadyRegistred).await;
         }
         ClientType::ProtoUser(proto_user_ref) => {
             // got nick already? if so, complete registration
@@ -340,16 +556,11 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
             if let Some(nick) = &proto_user.nick {
                 // had nick already, complete registration
                 Some(ClientType::User(
-                    irc.register(
-                        client,
-                        nick.clone(),
-                        username,
-                        real_name,
-                    )?  // propagate the error if it goes wrong 
-                ))      // (nick taken, most likely corner-case)
-            // there probably is some message we're meant to
-            // return to the client to confirm successful
-            // registration...
+                    irc.register(client, nick.clone(), username, real_name)?, // propagate the error if it goes wrong
+                )) // (nick taken, most likely corner-case)
+                   // there probably is some message we're meant to
+                   // return to the client to confirm successful
+                   // registration...
             } else {
                 // don't see an error in the irc file,
                 // except the one if you're already reg'd
@@ -364,20 +575,31 @@ pub fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
     if let Some(new_client_type) = result {
         client.set_client_type(new_client_type);
     }
-    return Ok(());
+    Ok(())
 }
 
-pub fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), ircError> {
+pub async fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), GenError> {
     let nick;
     if let Some(n) = params.opt_params.iter().next() {
         nick = n.to_string();
     } else {
-        return Err(ircError::NeedMoreParams("NICK".to_string()));
+        return client
+            .send_err(ircError::NeedMoreParams("NICK".to_string()))
+            .await;
+    }
+
+    // is the nick a valid nick string?
+    if !rfc::valid_nick(&nick) {
+        return client
+            .send_err(ircError::ErroneusNickname(nick.to_string()))
+            .await;
     }
 
     // is this nick already taken?
-    if let Ok(_hit) = irc.get_name(&nick) {
-        return Err(ircError::NicknameInUse(nick.to_string()));
+    if let Some(_hit) = irc.get_name(&nick) {
+        return client
+            .send_err(ircError::NicknameInUse(nick.to_string()))
+            .await;
     }
 
     // we can return a tuple and send messages after the match
@@ -402,7 +624,7 @@ pub fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
             let mut proto_user = proto_user_ref.lock().unwrap();
             // need to account for the case where NICK is sent
             // twice without any user command
-            if let Some(_) = proto_user.nick {
+            if proto_user.nick.is_some() {
                 proto_user.nick = Some(nick);
                 None
             } else {
@@ -415,7 +637,7 @@ pub fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
                         nick,
                         username.unwrap().to_string(),
                         real_name.unwrap().to_string(),
-                    )?  // error propagation if registration fails
+                    )?, // error propagation if registration fails
                 ))
             }
         }
@@ -424,5 +646,5 @@ pub fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<(), i
     if let Some(new_client_type) = result {
         client.set_client_type(new_client_type);
     }
-    return Ok(());
+    Ok(())
 }
