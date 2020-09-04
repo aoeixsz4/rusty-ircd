@@ -41,7 +41,7 @@ winny Wooble Xlbrag yeled yidhra zoid zorkian zyith {Demo}2
 
 
 my $handle;
-my $path_to_file = "fuzz/50-chans.txt";
+my $path_to_file = "fuzz/freenode-chanlist.txt";
 unless (open $handle, "<:encoding(utf8)", $path_to_file) {
    die "Could not open file '$path_to_file'\n";
 }
@@ -83,7 +83,7 @@ unless (open $handle, ">:encoding(utf8)", $log_path) {
 my ($buffer, $string, $n_targets, $cmd, $read, $victims, @ready);
 my $seed = my_randint(20);
 while (1) {
-    sleep(my_randint(10*$seed));
+    usleep(my_randint(1000000*$seed));
     @ready = $s->can_read(0);
     if (any { $_ eq $sock } @ready) {
         $read = $sock->recv($buffer, 4096);

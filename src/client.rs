@@ -173,7 +173,6 @@ pub async fn run_client_handler(
     let mut handler = ClientHandler::new(id, host, &irc, tx, sock);
     irc.insert_client(handler.id, Arc::downgrade(&handler.client));
     debug!("assigned client id {}", handler.id);
-    info!("IRC core: {:?}", irc);
 
     /* would it be ridic to spawn a new process for every
      * message received from the user, and if we did that
