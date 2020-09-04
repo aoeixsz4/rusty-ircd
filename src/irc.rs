@@ -86,17 +86,7 @@ impl Clone for User {
 impl Drop for User {
     fn drop (&mut self) {
         debug!("drop called on user {}, clear channel list", self.get_nick());
-        for (chan_name, chan_ptr) in self.channel_list.lock().unwrap().drain() {
-            if let Some(chan) = Weak::upgrade(&chan_ptr) {
-                if let Some(nick_key) = chan.get_user_key(&self.get_nick()) {
-                    chan.rm_key(&nick_key);
-                    if chan.is_empty() {
-                        self.irc.remove_name(&chan_name);
-                    }
-                }
-            }
-        }
-        self.irc.remove_name(&self.get_nick());
+        self.clear_up();
     }
 }
 
@@ -123,83 +113,35 @@ impl User {
         })
     }
 
-    pub fn add_channel(&self, chanmask: &str, ptr: Weak<Channel>) { /*GDB*/
-        self.channel_list.lock().unwrap().insert(chanmask.to_string(), ptr);
-    }
-
-    // the functions that call this typically also deal with delinking
-    // our user from the chan's user list, and remove from server channel
-    // hashmap if the channel is empty, so no need to call self._rm_chan_inside_lock()
-    pub fn rm_channel(&self, chanmask: &str) {/*GDB*/
-        self.channel_list.lock().unwrap().remove(chanmask);
-    }
-
-    // separate function allows this one to be called from clear_chans_and_exit(),
-    // which has an outer channel_list mutex lock
-    fn _rm_chan_inside_lock(&self, chanmask: &str, ptr: &Channel) {/* --- */
-        if let Some(key) = ptr.get_user_key(&self.get_nick()) {
-            ptr.rm_key(&key);
-            if ptr.is_empty() {
-                if let Ok(NamedEntity::Chan(_ptr)) = self.irc.remove_name(chanmask) {
-                    debug!("_rm_chan_inside_lock(): removed chan {} on part/exit of user {}", chanmask, self.get_nick());
-                } else {
-                    debug!("_rm_chan_inside_lock(): attempt to remove chan {} from main server hashmap failed", chanmask);
+    /* since this is basically the drop() code,
+     * have drop just call this */
+    pub fn clear_up(&self) {
+        self.channel_list.lock()
+            .unwrap()
+            .drain()
+            .filter_map(|(_name, chan_ptr)|{
+                Weak::upgrade(&chan_ptr)
+                /* but is it bad to silently ignore the refs that won't upgrade... */
+            }).for_each(|chan|{
+                chan.rm_key(&self.get_nick());
+                if chan.is_empty() {
+                    self.irc.remove_name(&chan.get_name());
                 }
-            }
-        } else {
-            debug!("_rm_chan_inside_lock(): chan {} was in user {}'s HashMap, but the relationship was not mutual",
-                    chanmask, self.get_nick());
-        }
-    }
-
-    /* Drop code should take care of this, but I'll leave in
-     * a couple of canaries that will report on things not being
-     * properly freed */
-    pub fn cleanup(irc: &Core, nick: &str) { /* --- */
-        debug!("cleanup(): nick {} was tied to a dangling ref - removing", nick);
-        let ret = irc.remove_name(nick);
-        if ret.is_ok() { debug!("removed {} from IRC namespace hash", nick); }
-        irc.search_user_chans_purge(nick);
-    }
-
-    pub fn clear_chans_and_exit(&self) -> Vec<Arc<Channel>> { /* --- */
-        let mut witnesses = Vec::new();
-
-        /* by using drain() here we properly clear the map */
-        for (chan_name, chan_ptr) in self.channel_list.lock().unwrap().drain() {
-            /* gotta be careful unwrapping on these, has lead to panic
-             * in another situation, tho that was a bug */
-            if let Some(chan) = Weak::upgrade(&chan_ptr) {
-                self._rm_chan_inside_lock(&chan_name, &chan);
-                if !chan.is_empty() {
-                    witnesses.push(chan);
-                }
-            } else {
-                debug!("clear_chans_and_exit(): cleanup of user {}, can't remove channel {}, possibly already freed",
-                        self.get_nick(), chan_name);
-            }
-        }
-
-        witnesses
-    }
-
-    pub fn clear_channel_list(&self) { /* --- */
-        self.channel_list.lock().unwrap().clear()
+            });
+        self.irc.remove_name(&self.get_nick());
     }
 
     /* attempt to find and upgrade a pointer to the user's client,
      * if that fails, so some cleanup and return an error indicating
      * dead client or similar */
     pub fn fetch_client(self: &Arc<Self>) -> Result<Arc<Client>, GenError> { /* GDB++ */
-        if let Some(client) = Weak::upgrade(&self.client) {
-            Ok(client)
-        } else {
-            let wits = self.clear_chans_and_exit();
+        Weak::upgrade(&self.client).ok_or_else(|| {
+            self.clear_up();
             debug!("fetch_client(): got a dead client @ user {}", self.get_nick());
             /* can't iterate here as chan.notify_quit() will call
              * user.send_line() and make this fn recursive */
-            Err(GenError::DeadClient(Arc::clone(&self), wits))
-        }
+            GenError::DeadClient(Arc::clone(&self))
+        })
     }
 
     /* nick changes need to be done carefully and atomically, or they'll
@@ -431,11 +373,11 @@ impl Core {
         }
     }
 
-    pub fn get_chan(&self, chanmask: &str) -> Option<Arc<Channel>> {
+    pub fn get_chan(&self, chanmask: &str) -> Result<Arc<Channel>, ircError> {
         if let Some(NamedEntity::Chan(chan)) = self.get_name(chanmask) {
-            Some(chan)
+            Ok(chan)
         } else {
-            None
+            Err(ircError::NoSuchChannel(chanmask.to_string()))
         }
     }
 
@@ -472,58 +414,32 @@ impl Core {
         user: &Arc<User>,
         part_msg: &str,
     ) -> Result<ircReply, GenError> {
-        if let Some(chan) = self.get_chan(chanmask) {
-            if !chan.is_joined(&user.get_nick()) {
-                gef!(ircError::NotOnChannel(chanmask.to_string()))
-            } else {
-                user.rm_channel(chanmask);
-                if let Some(key) = chan.get_user_key(&user.get_nick()) {
-                    chan.rm_key(&key);
-                }
-                if chan.is_empty() {
-                    self.remove_name(chanmask)?; Ok(ircReply::None)
-                } else {
-                    chan.notify_part(user, chanmask, part_msg).await; Ok(ircReply::None)
-                }
-            }
-        } else {
-            gef!(ircError::NoSuchChannel(chanmask.to_string()))
-        }
+        let chan = self.get_chan(chanmask)?;
+        chan.rm_user(user, part_msg).await.map_err(|_e|{
+                ircError::NotOnChannel(chanmask.to_string())
+            })?;
+        Ok(ircReply::None)
     }
 
     pub async fn join_chan(self: &Arc<Core>, chanmask: &str, user: &Arc<User>) -> Result<ircReply, GenError> {
         if !rfc::valid_channel(chanmask) {
             return gef!(ircError::NoSuchChannel(chanmask.to_string()));
         }
-
-        let channel = self.get_chan(chanmask);
-        let chan = if let Some(chan) = channel {
-            /* need to check if user is already in chan */
-            if chan.is_joined(&user.get_nick()) {
-                return Ok(ircReply::None);
+        let nick = user.get_nick();
+        match self.get_chan(chanmask) {
+            Ok(chan) => {
+                /* need to check if user is already in chan */
+                if chan.is_joined(&nick) {
+                    return Ok(ircReply::None);
+                }
+                chan.add_user(user, ChanFlags::None).await
+            },
+            Err(_) => {
+                let chan = Arc::new(Channel::new(&self, chanmask));
+                self.insert_name(chanmask, NamedEntity::Chan(Arc::clone(&chan)))?; // what happens if this error does occur?
+                chan.add_user(user, ChanFlags::Op).await
             }
-            chan.add_user(user, ChanFlags::None);
-            chan.notify_join(user, chanmask).await;
-            chan
-        } else {
-            let chan = Arc::new(Channel::new(&self, chanmask));
-            self.insert_name(chanmask, NamedEntity::Chan(Arc::clone(&chan)))?; // what happens if this error does occur?
-            chan.add_user(user, ChanFlags::Op);
-            chan
-        };
-
-        user.add_channel(chanmask, Arc::downgrade(&chan));
-
-        user.send_rpl(ircReply::Topic(chanmask.to_string(), chan.get_topic()))
-            .await?;
-
-        user.send_rpl(ircReply::NameReply(
-            chanmask.to_string(),
-            chan.gen_sorted_nick_list(),
-        ))
-        .await?;
-
-        Ok(ircReply::EndofNames(chanmask.to_string()))
+        }
     }
 
     /* don't want anyone to take our nick while we're in the middle of faffing around... */
@@ -584,6 +500,7 @@ impl Core {
         Ok(user)
     }
 
+    /* think a bit more about what this method is doing and what it's for */
     fn _search_user_chans(&self, nick: &str, purge: bool) -> Vec<String> {
         let mut channels = Vec::new();
         let mut chan_strings = Vec::new();
@@ -594,13 +511,13 @@ impl Core {
         }
 
         for channel in channels.iter() {
-            if channel.is_empty() && self.remove_name(&channel.get_name()).is_ok() {
-                debug!("_search_user_chans(): remove channel {} from IRC HashMap", &channel.get_name());
-            }
-            if let Some(key) = channel.get_user_key(nick) {
+            if channel.is_joined(nick) {
                 chan_strings.push(channel.get_name());
                 if purge {
-                    channel.rm_key(&key);
+                    channel.rm_key(&nick);
+                    if channel.is_empty() && self.remove_name(&channel.get_name()).is_ok() {
+                        debug!("_search_user_chans(): remove channel {} from IRC HashMap", &channel.get_name());
+                    }
                 }
             }
         }
@@ -654,23 +571,24 @@ pub async fn topic(irc: &Core, user: &User, mut params: ParsedMsg) -> Result<irc
         return gef!(ircError::NeedMoreParams("TOPIC".to_string()));
     }
 
+    /* are ya in the chan? */
     let chanmask = params.opt_params.remove(0);
-    /* just get the topic */
-    if let Some(chan) = irc.get_chan(&chanmask) {
-        if chan.is_joined(&user.get_nick()) {
-            if params.opt_params.is_empty() {
-                Ok(ircReply::Topic(chanmask, chan.get_topic()))
-            } else if chan.is_op(user) {
-                chan.set_topic(&params.opt_params.remove(0));
-                Ok(ircReply::None)
-            } else {
-                gef!(ircError::ChanOPrivsNeeded(chanmask))
-            }
-        } else {
-            gef!(ircError::NotOnChannel(chanmask))
-        }
+    let chan = irc.get_chan(&chanmask)?;
+    if !chan.is_joined(&user.get_nick()) {
+        return gef!(ircError::NotOnChannel(chanmask));
+    }
+
+    /* just want to receive topic? */
+    if params.opt_params.is_empty() {
+        return Ok(ircReply::Topic(chanmask, chan.get_topic()))
+    };
+    
+    /* set topic IF permissions allow */
+    if chan.is_op(user) {
+        chan.set_topic(&params.opt_params.remove(0));
+        Ok(ircReply::None)
     } else {
-        gef!(ircError::NoSuchChannel(chanmask))
+        gef!(ircError::ChanOPrivsNeeded(chanmask))
     }
 }
 
@@ -745,7 +663,8 @@ pub async fn msg(
                 match User::upgrade(&user_weak, target) {
                     Ok(recv_u) => recv_u.send_msg(&send_u, &cmd, &target, &message).await,
                     Err(GenError::DeadUser(nick)) => {
-                        User::cleanup(irc, &nick);
+                        let _res = irc.search_user_chans_purge(&nick);
+                        irc.remove_name(&nick);
                         Err(GenError::DeadUser(nick))
                     },
                     Err(e) => Err(e),

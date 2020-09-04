@@ -47,7 +47,7 @@ pub enum GenError {
     IRC(ircError),
     Mpsc(mpscSendErr<String>),
     Chan(ChanError),
-    DeadClient(Arc<User>, Vec<Arc<Channel>>),
+    DeadClient(Arc<User>),
     DeadUser(String),
 }
 
@@ -59,7 +59,7 @@ impl fmt::Display for GenError {
             GenError::IRC(ref err) => write!(f, "IRC Error: {}", err),
             GenError::Mpsc(ref err) => write!(f, "MPSC Send Error: {}", err),
             GenError::Chan(ref err) => write!(f, "Channel Error: {}", err),
-            GenError::DeadClient(user, _chans) => write!(f, "user {}, stale client", user.get_nick()),
+            GenError::DeadClient(user) => write!(f, "user {}, stale client", user.get_nick()),
             GenError::DeadUser(nick) => write!(f, "user {}, remant, scattered WeakRefs", nick),
         }
     }
@@ -76,7 +76,7 @@ impl error::Error for GenError {
             GenError::Parse(ref err) => Some(err),
             GenError::IRC(ref err) => Some(err),
             GenError::Mpsc(ref err) => Some(err),
-            GenError::DeadClient(_user, _chans) => None,
+            GenError::DeadClient(_user) => None,
             GenError::DeadUser(_nick) => None,
             GenError::Chan(ref err) => Some(err),
         }
@@ -277,10 +277,14 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
         match error_wrapper(&handler.client, irc, &line).await {
             Err(GenError::IRC(err)) => handler.client.send_err(err).await?,
             Err(GenError::Parse(err)) => handler.client.send_err(ircError::from(err)).await?,
+            Err(GenError::Chan(_err)) => (), /* non-fatal, will figure out how to handle later */
             Err(GenError::Io(err)) => return Err(GenError::Io(err)),
             Err(GenError::Mpsc(err)) => return Err(GenError::Mpsc(err)),
-            Err(GenError::DeadClient(user, chans)) => attempt_cleanup(irc, user, chans),
-            Err(GenError::DeadUser(nick)) => User::cleanup(irc, &nick),
+            Err(GenError::DeadClient(user)) => attempt_cleanup(irc, user),
+            Err(GenError::DeadUser(nick)) => {
+                let _res = irc.search_user_chans_purge(&nick);
+                irc.remove_name(&nick);
+            },
             Ok(ircReply::None) => (),
             Ok(rpl) => { handler.client.get_user().send_rpl(rpl).await?; }
         }
@@ -297,7 +301,7 @@ async fn error_wrapper (client: &Arc<Client>, irc: &Arc<Core>, line: &str) -> Re
 }
 
 /* found a stale user with no client */
-pub fn attempt_cleanup(irc: &Core, user: Arc<User>, chans: Vec<Arc<Channel>>) {
+pub fn attempt_cleanup(irc: &Core, user: Arc<User>) {
     let id = user.get_id();
     debug!("attempted cleanup of stale User, id {}", id);
 
@@ -327,7 +331,7 @@ pub fn attempt_cleanup(irc: &Core, user: Arc<User>, chans: Vec<Arc<Channel>>) {
     debug!("removed user {} from these channels: {}", nick, found.join(" "));
 
     /* also make sure the user's channel hashmap is also clear */
-    user.clear_channel_list();
+    user.clear_up();
 
     /*for chan in chans.iter() {
      *   chan.notify_quit(&user, "vanishes in a cloud of rusty iron shavings").await;
