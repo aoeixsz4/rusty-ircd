@@ -10,9 +10,26 @@ use crate::irc::{Core, User};
 
 use std::clone::Clone;
 use std::collections::BTreeMap;
+use std::{error, fmt};
 use std::sync::{Arc, Mutex, Weak};
 
 use log::debug;
+
+#[derive(Debug)]
+pub enum ChanError {
+    LinkFailed(String, String),
+    UnlinkFailed(String, String),
+}
+
+impl error::Error for ChanError {}
+impl fmt::Display for ChanError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ChanError::LinkFailed(nick, chan) => write!(f, "couldn't add {} to {} channel list", nick, chan),
+            ChanError::UnlinkFailed(nick, chan) => write!(f, "couldn't remove {} from {} channel list", nick, chan),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum ChanFlags {
@@ -60,62 +77,60 @@ impl Channel {
         }
     }
 
-    pub fn add_user(&self, new_user: &Arc<User>, flags: ChanFlags) {
-        let nick_str = match flags {
-            ChanFlags::None => new_user.get_nick(),
-            ChanFlags::Voice => format!("+{}", new_user.get_nick()),
-            ChanFlags::Op => format!("@{}", new_user.get_nick()),
-        };
+    /* generate a vector of Arc pointers to users on this channel,
+     * remove any nicks from the tree if upgrade on the weak pointer
+     * fails */
+    pub fn gen_user_ptr_vec(&self) -> Vec<Arc<User>> {
+        let mut locked = self.users.lock().unwrap();
+        locked.iter()
+            .filter_map(|(key, val)|{
+                if let Some(ptr) = Weak::upgrade(&val.user_ptr) {
+                    Some(ptr)
+                } else {
+                    /* with iterator style it also seems
+                     * possible to remove the bad keys on the fly
+                     */
+                    debug!("remove bad key {} from chan {}", key, self.get_name());
+                    locked.remove(&key.clone());
+                    if locked.is_empty() {
+                        debug!("{} empty, unlink from irc::Core HashMap", self.get_name());
+                        self.irc.remove_name(&self.get_name());
+                    }; None
+                }
+        }).collect::<Vec<_>>()
+    }
+
+    /* spit out a vector of (key, value) tuples */
+    fn _get_user_list(&self) -> Vec<(String, ChanUser)> {
         self.users
             .lock()
             .unwrap()
-            .entry(nick_str)
-            .or_insert_with(|| ChanUser::new(new_user, flags));
+            .into_iter()
+            .collect::<Vec<_>>()
     }
 
-    pub fn gen_user_ptr_vec(&self) -> Vec<Arc<User>> {
-        let mut users = Vec::new();
-        let cloned = self.users.lock().unwrap().clone();
-        for (key, val) in cloned.iter() {
-            if let Some(arc_ptr) = Weak::upgrade(&val.user_ptr) {
-                users.push(arc_ptr);
-            } else {
-                debug!("chan {}: could not upgrade pointer to user under key {}",
-                        self.name, key);
-                self.rm_key(key);
-                debug!("chan {}: remove key {}", self.name, key);
-                if self.is_empty() {
-                    debug!("chan {} empty, remove from IRC HashMap", self.name);
-                    self.irc.remove_name(&self.name);
+    /* this one just gives the actual nicks themselves,
+     * without chan privilege signifiers */
+    fn _get_nick_list_wo_badges(&self) -> Vec<String> {
+        self._get_user_list()
+            .iter()
+            .map(|(key, _val)|{
+                key.to_string()
+            }).collect::<Vec<_>>()
+    }
+
+    /* this time give the nicks processed with added '+'
+     * tag for voice or '@' for chanop */
+    pub fn get_nick_list(&self) -> Vec<String> {
+        self._get_user_list()
+            .iter()
+            .map(|(key, val)| {
+                match val.chan_flags {
+                    ChanFlags::None => key.to_string(),
+                    ChanFlags::Voice => format!("+{}", key).to_string(),
+                    ChanFlags::Op => format!("@{}", key).to_string(),
                 }
-            }
-        }
-        users
-    }
-
-    pub fn gen_sorted_nick_list(&self) -> Vec<String> {
-        let mut ret = Vec::new();
-        let locked = self.users.lock().unwrap().clone();
-        for key in locked.keys() {
-            ret.push(key.clone());
-        }
-        ret
-    }
-
-    // this bit is rather inefficient...
-    pub fn get_user_key(&self, nick: &str) -> Option<String> {
-        let key = nick.to_string();
-        let voice = format!("+{}", key);
-        let op = format!("@{}", key);
-        if self.users.lock().unwrap().contains_key(&key) {
-            Some(key)
-        } else if self.users.lock().unwrap().contains_key(&voice) {
-            Some(voice)
-        } else if self.users.lock().unwrap().contains_key(&op) {
-            Some(op)
-        } else {
-            None
-        }
+            }).collect::<Vec<_>>()
     }
 
     pub fn get_topic(&self) -> String {
@@ -131,7 +146,7 @@ impl Channel {
     }
 
     pub fn get_names_list(&self) -> Vec<String> {
-        self.gen_sorted_nick_list()
+        self.get_nick_list()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -144,44 +159,50 @@ impl Channel {
     }
 
     pub fn is_joined(&self, nick: &str) -> bool {
-        let names_list = self.get_names_list();
-        for name in names_list.iter() {
-            if
-            (!name.is_empty()
-                && (&name[..1] == "+" || &name[..1] == "@")
-                && nick == &name[1..]
-            ) || nick == &name[..] {
-                return true;
-            }
-        }
-        false
+        self.users.lock().unwrap().contains_key(nick)
     }
 
-    pub fn rm_key(&self, key: &str) {
-        self.users.lock().unwrap().remove(key);
-        let voice = format!("+{}", key);
-        let op = format!("@{}", key);
-        if !key.is_empty() && &key[..1] != "+" && &key[..1] != "@" {
-            self.users.lock().unwrap().remove(&voice);
-            self.users.lock().unwrap().remove(&op);
+    /* put add_ and rm_user() here together and have all the code to handle
+     * that in one place, both for User and Chan side - plus, mutex lock
+     * everything for the entire fn call */
+    pub fn add_user(self: &Arc<Self>, new_user: &Arc<User>, flags: ChanFlags) -> Result<(), ChanError> {
+        let mut chan_mutex_lock = self.users.lock().unwrap();
+        let mut user_mutex_lock = new_user.channel_list.lock().unwrap();
+        let nick = new_user.get_nick();
+        let chan = self.get_name();
+        let chan_ptr = Arc::downgrade(&self);
+
+        if !chan_mutex_lock.contains_key(&nick) {
+            chan_mutex_lock.insert(nick, ChanUser::new(new_user, flags));
+            user_mutex_lock.insert(chan, chan_ptr);
+            Ok(())
+        } else {
+            Err(ChanError::LinkFailed(nick, chan))
         }
     }
 
+    /* put add_ and rm_user() here together and have all the code to handle
+     * that in one place, both for User and Chan side - plus, mutex lock
+     * everything for the entire fn call */
+    pub fn rm_user(&self, user: &User) -> Result<(), ChanError> {
+        let mut chan_mutex_lock = self.users.lock().unwrap();
+        let mut user_mutex_lock = user.channel_list.lock().unwrap();
+
+        let key = user.get_nick().to_string();
+        let chan = self.get_name();
+        if let Some(val) = chan_mutex_lock.remove(&key) {
+            user_mutex_lock.remove(&chan); Ok(())
+        } else {
+            Err(ChanError::UnlinkFailed(key, chan))
+        }
+    }
+
+    /* similar rationale to the above about linking and unlinking users to chans */
     pub fn update_nick(&self, old_nick: &str, new_nick: &str) -> Result<(), ircError> {
         let mut mutex_lock = self.users.lock().unwrap();
         let key = old_nick.to_string();
-        let voice = format!("+{}", key);
-        let op = format!("@{}", key);
         if let Some(val) = mutex_lock.remove(&key) {
-            mutex_lock.insert(key, val);
-            Ok(())
-        } else if let Some(val) = mutex_lock.remove(&voice) {
-            let new_key = format!("+{}", new_nick);
-            mutex_lock.insert(new_key, val);
-            Ok(())
-        } else if let Some(val) = mutex_lock.remove(&voice) {
-            let new_key = format!("@{}", new_nick);
-            mutex_lock.insert(new_key, val);
+            mutex_lock.insert(new_nick.to_string(), val);
             Ok(())
         } else {
             Err(ircError::NotOnChannel(self.name.clone()))
