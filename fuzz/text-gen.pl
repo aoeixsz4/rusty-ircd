@@ -41,7 +41,7 @@ winny Wooble Xlbrag yeled yidhra zoid zorkian zyith {Demo}2
 
 
 my $handle;
-my $path_to_file = "fuzz/freenode-chanlist.txt";
+my $path_to_file = "fuzz/50-chans.txt";
 unless (open $handle, "<:encoding(utf8)", $path_to_file) {
    die "Could not open file '$path_to_file'\n";
 }

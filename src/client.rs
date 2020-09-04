@@ -16,18 +16,17 @@
 */
 extern crate tokio;
 extern crate log;
-use crate::irc::chan::Channel;
+use crate::irc::chan::{Channel, ChanError};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::{self, Core, User, NamedEntity};
 use crate::parser::{parse_message, ParseError};
-use std::collections::BTreeMap;
 use std::error;
 use std::fmt;
 use std::io::Error as ioError;
 use std::net::IpAddr;
 use std::sync::{Arc, Weak, Mutex};
-use log::{debug, warn, info};
+use log::{debug, warn};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
@@ -47,6 +46,7 @@ pub enum GenError {
     Parse(ParseError),
     IRC(ircError),
     Mpsc(mpscSendErr<String>),
+    Chan(ChanError),
     DeadClient(Arc<User>, Vec<Arc<Channel>>),
     DeadUser(String),
 }
@@ -58,6 +58,7 @@ impl fmt::Display for GenError {
             GenError::Parse(ref err) => write!(f, "Parse Error: {}", err),
             GenError::IRC(ref err) => write!(f, "IRC Error: {}", err),
             GenError::Mpsc(ref err) => write!(f, "MPSC Send Error: {}", err),
+            GenError::Chan(ref err) => write!(f, "Channel Error: {}", err),
             GenError::DeadClient(user, _chans) => write!(f, "user {}, stale client", user.get_nick()),
             GenError::DeadUser(nick) => write!(f, "user {}, remant, scattered WeakRefs", nick),
         }
@@ -77,6 +78,7 @@ impl error::Error for GenError {
             GenError::Mpsc(ref err) => Some(err),
             GenError::DeadClient(_user, _chans) => None,
             GenError::DeadUser(_nick) => None,
+            GenError::Chan(ref err) => Some(err),
         }
     }
 }
@@ -90,6 +92,12 @@ impl From<ioError> for GenError {
 impl From<ParseError> for GenError {
     fn from(err: ParseError) -> GenError {
         GenError::Parse(err)
+    }
+}
+
+impl From<ChanError> for GenError {
+    fn from(err: ChanError) -> GenError {
+        GenError::Chan(err)
     }
 }
 

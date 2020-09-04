@@ -123,20 +123,20 @@ impl User {
         })
     }
 
-    pub fn add_channel(&self, chanmask: &str, ptr: Weak<Channel>) {
+    pub fn add_channel(&self, chanmask: &str, ptr: Weak<Channel>) { /*GDB*/
         self.channel_list.lock().unwrap().insert(chanmask.to_string(), ptr);
     }
 
     // the functions that call this typically also deal with delinking
     // our user from the chan's user list, and remove from server channel
     // hashmap if the channel is empty, so no need to call self._rm_chan_inside_lock()
-    pub fn rm_channel(&self, chanmask: &str) {
+    pub fn rm_channel(&self, chanmask: &str) {/*GDB*/
         self.channel_list.lock().unwrap().remove(chanmask);
     }
 
     // separate function allows this one to be called from clear_chans_and_exit(),
     // which has an outer channel_list mutex lock
-    fn _rm_chan_inside_lock(&self, chanmask: &str, ptr: &Channel) {
+    fn _rm_chan_inside_lock(&self, chanmask: &str, ptr: &Channel) {/* --- */
         if let Some(key) = ptr.get_user_key(&self.get_nick()) {
             ptr.rm_key(&key);
             if ptr.is_empty() {
@@ -155,14 +155,14 @@ impl User {
     /* Drop code should take care of this, but I'll leave in
      * a couple of canaries that will report on things not being
      * properly freed */
-    pub fn cleanup(irc: &Core, nick: &str) {
+    pub fn cleanup(irc: &Core, nick: &str) { /* --- */
         debug!("cleanup(): nick {} was tied to a dangling ref - removing", nick);
         let ret = irc.remove_name(nick);
         if ret.is_ok() { debug!("removed {} from IRC namespace hash", nick); }
         irc.search_user_chans_purge(nick);
     }
 
-    pub fn clear_chans_and_exit(&self) -> Vec<Arc<Channel>> {
+    pub fn clear_chans_and_exit(&self) -> Vec<Arc<Channel>> { /* --- */
         let mut witnesses = Vec::new();
 
         /* by using drain() here we properly clear the map */
@@ -183,14 +183,14 @@ impl User {
         witnesses
     }
 
-    pub fn clear_channel_list(&self) {
+    pub fn clear_channel_list(&self) { /* --- */
         self.channel_list.lock().unwrap().clear()
     }
 
     /* attempt to find and upgrade a pointer to the user's client,
      * if that fails, so some cleanup and return an error indicating
      * dead client or similar */
-    pub fn fetch_client(self: &Arc<Self>) -> Result<Arc<Client>, GenError> {
+    pub fn fetch_client(self: &Arc<Self>) -> Result<Arc<Client>, GenError> { /* GDB++ */
         if let Some(client) = Weak::upgrade(&self.client) {
             Ok(client)
         } else {
@@ -262,7 +262,7 @@ impl User {
         command_str: &str,
         target: &str,
         msg: &str
-    ) -> Result<ircReply, GenError> {
+    ) -> Result<ircReply, GenError> { /* GDB+ */
         let prefix = src.get_prefix();
         let line = format!(":{} {} {} :{}", &prefix, command_str, target, msg);
         /* instead of unwrap(), fetch_client() tries to upgrade the pointer,
@@ -275,7 +275,7 @@ impl User {
         Ok(ircReply::None)
     }
 
-    pub async fn send_err(self: &Arc<Self>, err: ircError) -> Result<ircReply, GenError> {
+    pub async fn send_err(self: &Arc<Self>, err: ircError) -> Result<ircReply, GenError> { /* GDB+ */
         let line = format!(":{} {}", self.irc.get_host(), err);
         let my_client = self.fetch_client()?;
         /* passing to an async fn and awaiting on it is gonna
@@ -284,7 +284,7 @@ impl User {
         Ok(ircReply::None)
     }
 
-    pub async fn send_rpl(self: &Arc<Self>, reply: ircReply) -> Result<ircReply, GenError> {
+    pub async fn send_rpl(self: &Arc<Self>, reply: ircReply) -> Result<ircReply, GenError> { /* GDB+ */
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
         let host = self.irc.get_host();
@@ -324,7 +324,7 @@ impl User {
         }
     }
 
-    pub async fn send_line(self: &Arc<Self>, line: &str) -> Result<ircReply, GenError> {
+    pub async fn send_line(self: &Arc<Self>, line: &str) -> Result<ircReply, GenError> { /* GDB++ */
         let my_client = self.fetch_client()?;
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
@@ -332,7 +332,7 @@ impl User {
         Ok(ircReply::None)
     }
 
-    pub fn upgrade(weak_ptr: &Weak<Self>, nick: &str) -> Result<Arc<Self>, GenError> {
+    pub fn upgrade(weak_ptr: &Weak<Self>, nick: &str) -> Result<Arc<Self>, GenError> { /* GDB+++ */
         if let Some(good_ptr) = Weak::upgrade(&weak_ptr) {
             Ok(good_ptr)
         } else {
