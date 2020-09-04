@@ -24,6 +24,11 @@ pub enum ParseError {
     InvalidNick(String),
     InvalidUser(String),
     InvalidHost(String),
+    EmptyMessage,
+    EmptyName,
+    EmptyNick,
+    EmptyHost,
+    EmptyUser,
 }
 
 impl error::Error for ParseError {}
@@ -37,6 +42,11 @@ pub enum HostType {
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            ParseError::EmptyName => write!(f, "Empty name (nick/host) field `: CMD`"),
+            ParseError::EmptyNick => write!(f, "Empty nick field `:!user@host CMD`"),
+            ParseError::EmptyUser => write!(f, "Empty user field `:nick!@host CMD`"),
+            ParseError::EmptyHost => write!(f, "Empty host field `:nick!user@ CMD`"),
+            ParseError::EmptyMessage => write!(f, "Empty message"),
             ParseError::NoCommand => write!(f, "No command given"),
             ParseError::InvalidCommand(cmd) => write!(f, "Invalid command string: {}", &cmd),
             ParseError::InvalidNick(nick) => write!(f, "Invalid nick: {}", &nick),
@@ -71,6 +81,9 @@ pub struct ParsedMsg {
 //    message    =  [ ":" prefix SPACE ] command [ params ]
 pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
     let mut line = message;
+    if line.is_empty() {
+        return Err(ParseError::EmptyMessage);
+    }
     let opt_prefix = if &message[..1] == ":" {
         // try for prefix
         let vec: Vec<&str> = line.splitn(2, ' ').collect();
@@ -97,7 +110,9 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
         // " :" means squash/collect all remaining args,
         // which is also supposed to happen if rfc::MaxParams
         // is reached
-        if &line[..1] == ":" {
+        if line.is_empty() {
+            break;
+        } else if &line[..1] == ":" {
             line = &line[1..line.len()];
             params.push(line.to_string());
             break;
@@ -106,6 +121,7 @@ pub fn parse_message(message: &str) -> Result<ParsedMsg, ParseError> {
             break;
         }
     }
+    /* should be safe - above code ensure non-zero length of params */
     let command = params.remove(0);
 
     // return the stuff
@@ -123,14 +139,18 @@ fn parse_prefix(msg: &str) -> Result<MsgPrefix, ParseError> {
     // first, let's tokenize with '@'
     let first_split: Vec<&str> = msg.splitn(2, '@').collect();
     let name: &str = first_split[0];
+    if name.is_empty() { return Err(ParseError::EmptyName); }
 
     if first_split.len() == 2 {
         let host = first_split[1];
+        if host.is_empty() { return Err(ParseError::EmptyHost); }
         // in this case we must have some sort of nick@host or possibly nick!user@host type
         // thing, so let's deal with that first...
         let second_split: Vec<&str> = first_split[0].splitn(2, '!').collect();
         if second_split.len() == 2 {
             let (nick, user) = (second_split[0].to_string(), second_split[1].to_string());
+            if nick.is_empty() { return Err(ParseError::EmptyNick); }
+            if user.is_empty() { return Err(ParseError::EmptyUser); }
             if !rfc::valid_user(&user) {
                 Err(ParseError::InvalidUser(user))
             } else if !rfc::valid_nick(&nick) {

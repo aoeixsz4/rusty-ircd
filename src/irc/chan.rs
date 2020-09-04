@@ -1,10 +1,18 @@
+macro_rules! gef {
+    ($e:expr) => (Err(GenError::from($e)));
+}
+
+extern crate log;
 use crate::client::GenError;
 use crate::irc::error::Error as ircError;
-use crate::irc::{MsgType, User};
+use crate::irc::reply::Reply as ircReply;
+use crate::irc::{Core, User};
 
 use std::clone::Clone;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
+
+use log::debug;
 
 #[derive(Debug, Clone)]
 pub enum ChanFlags {
@@ -34,10 +42,11 @@ pub struct Channel {
     topic: Mutex<String>,
     users: Mutex<BTreeMap<String, ChanUser>>,
     banmasks: Mutex<Vec<String>>,
+    irc: Arc<Core>,
 }
 
 impl Channel {
-    pub fn new(chanmask: &str) -> Channel {
+    pub fn new(irc: &Arc<Core>, chanmask: &str) -> Channel {
         let name = chanmask.to_string();
         let topic = Mutex::new(String::from(""));
         let users = Mutex::new(BTreeMap::new());
@@ -47,6 +56,7 @@ impl Channel {
             topic,
             users,
             banmasks,
+            irc: Arc::clone(&irc)
         }
     }
 
@@ -64,17 +74,28 @@ impl Channel {
     }
 
     pub fn gen_user_ptr_vec(&self) -> Vec<Arc<User>> {
-        let mut ret = Vec::new();
-        let locked = self.users.lock().unwrap();
-        for val in locked.values() {
-            ret.push(Weak::upgrade(&val.user_ptr).unwrap());
+        let mut users = Vec::new();
+        let cloned = self.users.lock().unwrap().clone();
+        for (key, val) in cloned.iter() {
+            if let Some(arc_ptr) = Weak::upgrade(&val.user_ptr) {
+                users.push(arc_ptr);
+            } else {
+                debug!("chan {}: could not upgrade pointer to user under key {}",
+                        self.name, key);
+                self.rm_key(key);
+                debug!("chan {}: remove key {}", self.name, key);
+                if self.is_empty() {
+                    debug!("chan {} empty, remove from IRC HashMap", self.name);
+                    self.irc.remove_name(&self.name);
+                }
+            }
         }
-        ret
+        users
     }
 
     pub fn gen_sorted_nick_list(&self) -> Vec<String> {
         let mut ret = Vec::new();
-        let locked = self.users.lock().unwrap();
+        let locked = self.users.lock().unwrap().clone();
         for key in locked.keys() {
             ret.push(key.clone());
         }
@@ -82,34 +103,54 @@ impl Channel {
     }
 
     // this bit is rather inefficient...
-    pub fn get_user_key(&self, user: &User) -> Option<String> {
-        let key = user.get_nick();
-        if self.users.lock().unwrap().contains_key(&key) {
-            return Some(key);
-        }
+    pub fn get_user_key(&self, nick: &str) -> Option<String> {
+        let key = nick.to_string();
         let voice = format!("+{}", key);
-        if self.users.lock().unwrap().contains_key(&voice) {
-            return Some(voice);
-        }
         let op = format!("@{}", key);
-        if self.users.lock().unwrap().contains_key(&op) {
-            return Some(op);
+        if self.users.lock().unwrap().contains_key(&key) {
+            Some(key)
+        } else if self.users.lock().unwrap().contains_key(&voice) {
+            Some(voice)
+        } else if self.users.lock().unwrap().contains_key(&op) {
+            Some(op)
+        } else {
+            None
         }
-        None
     }
 
     pub fn get_topic(&self) -> String {
         self.topic.lock().unwrap().to_string()
     }
 
+    pub fn set_topic(&self, topic: &str) {
+        *self.topic.lock().unwrap() = topic.to_string()
+    }
+
+    pub fn get_name(&self) -> String {
+        self.name.clone()
+    }
+
+    pub fn get_names_list(&self) -> Vec<String> {
+        self.gen_sorted_nick_list()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.users.lock().unwrap().is_empty()
     }
 
-    pub fn is_joined(&self, sought_user: &User) -> bool {
-        let user_list = self.gen_user_ptr_vec();
-        for user in user_list.iter() {
-            if user.id == sought_user.id {
+    pub fn is_op(&self, user: &User) -> bool {
+        let op = format!("@{}", &user.nick.lock().unwrap());
+        self.users.lock().unwrap().contains_key(&op)
+    }
+
+    pub fn is_joined(&self, nick: &str) -> bool {
+        let names_list = self.get_names_list();
+        for name in names_list.iter() {
+            if
+            (!name.is_empty()
+                && (&name[..1] == "+" || &name[..1] == "@")
+                && nick == &name[1..]
+            ) || nick == &name[..] {
                 return true;
             }
         }
@@ -118,81 +159,82 @@ impl Channel {
 
     pub fn rm_key(&self, key: &str) {
         self.users.lock().unwrap().remove(key);
-    }
-
-    pub async fn notify_join(&self, source: &User, target: &str) -> Result<(), GenError> {
-        // checks for banmasks should be done-
-        // also whether the sending user is in the channel or not
-        let prefix = source.get_prefix();
-        let command_str = "JOIN";
-        let line = format!(":{} {} {}", prefix, command_str, target);
-        // if we clone the list, the true list could change while
-        // we're forwarding messages, but this keeps us thread safe
-        let user_list = self.gen_user_ptr_vec();
-        for user in user_list.iter() {
-            if user.id != source.id {
-                let result = user.send_line(&line).await;
-                if let Err(err) = result {
-                    println!("another tasks's client died: {}", err);
-                }
-            }
+        let voice = format!("+{}", key);
+        let op = format!("@{}", key);
+        if !key.is_empty() && &key[..1] != "+" && &key[..1] != "@" {
+            self.users.lock().unwrap().remove(&voice);
+            self.users.lock().unwrap().remove(&op);
         }
-        Ok(())
     }
 
-    pub async fn notify_part(
+    pub fn update_nick(&self, old_nick: &str, new_nick: &str) -> Result<(), ircError> {
+        let mut mutex_lock = self.users.lock().unwrap();
+        let key = old_nick.to_string();
+        let voice = format!("+{}", key);
+        let op = format!("@{}", key);
+        if let Some(val) = mutex_lock.remove(&key) {
+            mutex_lock.insert(key, val);
+            Ok(())
+        } else if let Some(val) = mutex_lock.remove(&voice) {
+            let new_key = format!("+{}", new_nick);
+            mutex_lock.insert(new_key, val);
+            Ok(())
+        } else if let Some(val) = mutex_lock.remove(&voice) {
+            let new_key = format!("@{}", new_nick);
+            mutex_lock.insert(new_key, val);
+            Ok(())
+        } else {
+            Err(ircError::NotOnChannel(self.name.clone()))
+        }
+    }
+
+    async fn _send_msg(
         &self,
         source: &User,
+        command_str: &str,
         target: &str,
-        part_msg: &str,
-    ) -> Result<(), GenError> {
+        msg: &str
+    ) -> Result<ircReply, GenError> {
         // checks for banmasks should be done-
         // also whether the sending user is in the channel or not
         let prefix = source.get_prefix();
-        let command_str = "PART";
-        let line = format!(":{} {} {} :{}", prefix, command_str, target, part_msg);
-        // if we clone the list, the true list could change while
-        // we're forwarding messages, but this keeps us thread safe
-        let user_list = self.gen_user_ptr_vec();
-        for user in user_list.iter() {
-            let result = user.send_line(&line).await;
-            if let Err(err) = result {
-                println!("another tasks's client died: {}", err);
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn send_msg(
-        &self,
-        source: &User,
-        target: &str,
-        msg: &str,
-        msg_type: &MsgType,
-    ) -> Result<(), ircError> {
-        // checks for banmasks should be done-
-        // also whether the sending user is in the channel or not
-        let prefix = source.get_prefix();
-        let command_str = match msg_type {
-            MsgType::PrivMsg => "PRIVMSG",
-            MsgType::Notice => "NOTICE",
+        let line = if msg.is_empty() {
+            format!(":{} {} {}", prefix, command_str, target)
+        } else {
+            format!(":{} {} {} :{}", prefix, command_str, target, msg)
         };
-        let line = format!(":{} {} {} :{}", prefix, command_str, target, msg);
-        if self.is_joined(source) {
+
+        if self.is_joined(&source.get_nick()) {
             // if we clone the list, the true list could change while
             // we're forwarding messages, but this keeps us thread safe
-            let user_list = self.gen_user_ptr_vec();
-            for user in user_list.iter() {
+            let users = self.gen_user_ptr_vec();
+            for user in users.iter() {
                 if user.id != source.id {
-                    let result = user.send_line(&line).await;
-                    if let Err(err) = result {
-                        println!("another tasks's client died: {}", err);
+                    if let Err(err) = user.send_line(&line).await {
+                        debug!("another tasks's client died: {}, note dead key {}", err, &user.get_nick());
+                        //user.clear_chans_and_exit();
                     }
                 }
             }
-            Ok(())
+            Ok(ircReply::None)
         } else {
-            Err(ircError::CannotSendToChan(target.to_string()))
+            gef!(ircError::CannotSendToChan(target.to_string()))
         }
+    }
+
+    pub async fn send_msg(&self, source: &User, cmd: &str, target: &str, msg: &str) -> Result<ircReply, GenError> {
+        self._send_msg(source, cmd, target, msg).await
+    }
+
+    pub async fn notify_join(&self, source: &User, chan: &str) -> Result<ircReply, GenError> {
+        self._send_msg(source, "JOIN", chan, "").await
+    }
+
+    pub async fn notify_part(&self, source: &User, chan: &str, msg: &str) -> Result<ircReply, GenError> {
+        self._send_msg(source, "PART", chan, msg).await
+    }
+
+    pub async fn notify_quit(&self, source: &User, chan: &str, msg: &str) -> Result<ircReply, GenError> {
+        self._send_msg(source, "QUIT", chan, msg).await
     }
 }

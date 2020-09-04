@@ -15,6 +15,24 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 use std::{error, fmt};
+use crate::parser::ParseError;
+
+impl From<ParseError> for Error {
+    fn from(err: ParseError) -> Error {
+        match err {
+            ParseError::InvalidCommand(cmd) => Error::InvalidCommand(cmd),
+            ParseError::InvalidHost(host) => Error::InvalidHost(host),
+            ParseError::InvalidNick(nick) => Error::ErroneusNickname(nick),
+            ParseError::InvalidUser(user) => Error::InvalidUser(user),
+            ParseError::NoCommand => Error::NoCommandGiven,
+            ParseError::EmptyMessage => Error::EmptyMessage,
+            ParseError::EmptyName => Error::EmptyName,
+            ParseError::EmptyNick => Error::EmptyNick,
+            ParseError::EmptyUser => Error::EmptyUser,
+            ParseError::EmptyHost => Error::EmptyHost,
+        }
+    }
+}
 
 impl error::Error for Error {}
 impl fmt::Display for Error {
@@ -32,6 +50,16 @@ impl fmt::Display for Error {
             Error::NotRegistered => write!(f, "451 :You have not registered"),
             Error::NeedMoreParams(cmd) => write!(f, "461 {} :Not enough parameters", cmd),
             Error::AlreadyRegistred => write!(f, "462 :You may not reregister"),
+            Error::ChanOPrivsNeeded(chan) => write!(f, "482 {} :You're not channel operator", chan),
+            Error::InvalidCommand(cmd) => write!(f, "600 {} :Parser: invalid command", cmd),
+            Error::InvalidHost(host) => write!(f, "601 {} :Parser: invalid host", host),
+            Error::InvalidUser(user) => write!(f, "602 {} :Parser: invalid user", user),
+            Error::NoCommandGiven => write!(f, "603 :Parser: no command given"),
+            Error::EmptyMessage => write!(f, "604 :Parser: empty message"),
+            Error::EmptyName => write!(f, "605 :Parser: empty message"),
+            Error::EmptyNick => write!(f, "606 :Parser: empty message"),
+            Error::EmptyUser => write!(f, "607 :Parser: empty message"),
+            Error::EmptyHost => write!(f, "608 :Parser: empty message"),
         }
     }
 }
@@ -77,12 +105,21 @@ pub enum Error {
     //    BannedFromChan(      NumReply, &'static str),
     //    BadChannelKey(       NumReply, &'static str),
     //    NoPrivileges(        NumReply, &'static str),
-    //    ChanOPrivsNeeded(    NumReply, &'static str),
+    ChanOPrivsNeeded(String),
     //    CantKillServer(      NumReply, &'static str),
     //    NoOperHost(          NumReply, &'static str),
     //    UModeUnknownFlag(    NumReply, &'static str),
     //    UsersDontMatch(      NumReply, &'static str),
     //BadChanMask(String)
+    InvalidCommand(String),
+    InvalidHost(String),
+    InvalidUser(String),
+    NoCommandGiven,
+    EmptyMessage,
+    EmptyName,
+    EmptyNick,
+    EmptyUser,
+    EmptyHost,
 }
 
 //pub const ERR_NOSUCHNICK: Error = Error::NoSuchNick(401, "<nickname> :No such nick/channel");

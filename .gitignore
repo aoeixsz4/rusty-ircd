@@ -4,3 +4,4 @@
 /examples/future.rs
 /examples/echo.rs
 /commit
+/fuzz/logs

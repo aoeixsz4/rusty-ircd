@@ -15,8 +15,9 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 extern crate dns_lookup;
+extern crate log;
 extern crate tokio;
-#[macro_use]
+
 pub mod irc;
 pub mod client;
 pub mod parser;
@@ -39,8 +40,8 @@ fn get_host(ip_addr: IpAddr) -> Result<Host, ioError> {
 
 async fn process_socket(sock: TcpStream, irc: Arc<Core>) -> Result<(), ioError> {
     let id = irc.assign_id();
-    /* Two ? required, one unwraps/expects a potential JoinError, the second ?
-     * unwraps to give Host or an ioError - may need some additional error
+    /* Two ? required, one expects a potential JoinError, the second ?
+     * decomposes to give Host or an ioError - may need some additional error
      * composition to deal with the possible JoinError... */
     let ip_address = sock.peer_addr()?.ip();
     let host = task::spawn_blocking(move || get_host(ip_address)).await??;
@@ -53,8 +54,18 @@ async fn process_socket(sock: TcpStream, irc: Arc<Core>) -> Result<(), ioError> 
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut listener = TcpListener::bind("127.0.0.1:6667").await?;
-    let irc_core = Core::new();
+    env_logger::init();
+    let mut listener = TcpListener::bind("127.0.1.1:6667").await?;
+    let server_host = if let Ok(ip) = "127.0.1.1".parse::<IpAddr>() {
+        if let Host::Hostname(h) = task::spawn_blocking(move ||get_host(ip)).await?? {
+            h
+        } else {
+            "localhost".to_string()
+        }
+    } else {
+        "localhost".to_string()
+    };
+    let irc_core = Core::new(server_host);
     loop {
         let (socket, _) = listener.accept().await?;
         tokio::spawn(process_socket(socket, Arc::clone(&irc_core)));
