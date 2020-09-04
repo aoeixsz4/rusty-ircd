@@ -266,7 +266,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "rusty-ircd"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "dns-lookup 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
