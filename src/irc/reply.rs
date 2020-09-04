@@ -48,6 +48,8 @@ impl fmt::Display for Reply {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Reply::None => write!(f, "300"),
+            Reply::ListReply(chan, topic) => write!(f, "322 :{} {}", chan, topic),
+            Reply::EndofList => write!(f, "323 :End of /LIST"),
             Reply::Topic(chan, topic_msg) => write!(f, "332 {} :{}", chan, topic_msg),
             Reply::NameReply(chan, nicks) => write!(f, "353 {} :{}", chan, nicks.join(" ")),
             Reply::EndofNames(chan) => write!(f, "366 {} :End of /NAMES list", chan),
@@ -59,5 +61,7 @@ pub enum Reply {
     None,
     Topic(String, String),
     NameReply(String, Vec<String>),
+    ListReply(String, String),
+    EndofList,
     EndofNames(String),
 }

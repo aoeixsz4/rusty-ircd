@@ -29,7 +29,7 @@ use crate::irc::reply::Reply as ircReply;
 use crate::irc::rfc_defs as rfc;
 use crate::parser::ParsedMsg;
 extern crate log;
-use log::{debug, info};
+use log::{debug, info, trace};
 use std::clone::Clone;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -141,13 +141,13 @@ impl User {
             ptr.rm_key(&key);
             if ptr.is_empty() {
                 if let Ok(NamedEntity::Chan(_ptr)) = self.irc.remove_name(chanmask) {
-                    debug!("removed chan {} on part/exit of user {}", chanmask, self.get_nick());
+                    debug!("_rm_chan_inside_lock(): removed chan {} on part/exit of user {}", chanmask, self.get_nick());
                 } else {
-                    debug!("attempt to remove chan {} from main server hashmap failed", chanmask);
+                    debug!("_rm_chan_inside_lock(): attempt to remove chan {} from main server hashmap failed", chanmask);
                 }
             }
         } else {
-            debug!("chan {} was in user {}'s HashMap, but the relationship was not mutual",
+            debug!("_rm_chan_inside_lock(): chan {} was in user {}'s HashMap, but the relationship was not mutual",
                     chanmask, self.get_nick());
         }
     }
@@ -156,7 +156,7 @@ impl User {
      * a couple of canaries that will report on things not being
      * properly freed */
     pub fn cleanup(irc: &Core, nick: &str) {
-        debug!("nick {} was tied to a dangling ref - removing", nick);
+        debug!("cleanup(): nick {} was tied to a dangling ref - removing", nick);
         let ret = irc.remove_name(nick);
         if ret.is_ok() { debug!("removed {} from IRC namespace hash", nick); }
         irc.search_user_chans_purge(nick);
@@ -175,7 +175,7 @@ impl User {
                     witnesses.push(chan);
                 }
             } else {
-                debug!("cleanup of user {}, can't remove channel {}, possibly already freed",
+                debug!("clear_chans_and_exit(): cleanup of user {}, can't remove channel {}, possibly already freed",
                         self.get_nick(), chan_name);
             }
         }
@@ -195,7 +195,7 @@ impl User {
             Ok(client)
         } else {
             let wits = self.clear_chans_and_exit();
-            debug!("got a dead client @ user {}", self.get_nick());
+            debug!("fetch_client(): got a dead client @ user {}", self.get_nick());
             /* can't iterate here as chan.notify_quit() will call
              * user.send_line() and make this fn recursive */
             Err(GenError::DeadClient(Arc::clone(&self), wits))
@@ -439,6 +439,33 @@ impl Core {
         }
     }
 
+    pub fn list_chans_ptr(&self) -> Vec<Arc<Channel>> {
+        let mut mutex_lock = self.namespace.lock().unwrap();
+        let mut ret = Vec::new();
+        for ent in mutex_lock.values() {
+            if let NamedEntity::Chan(chan) = ent {
+                ret.push(Arc::clone(&chan));
+            }
+        }
+        ret
+    }
+
+    pub fn list_chans_str(&self) -> Vec<String> {
+        let mut vector = self.list_chans_ptr();
+        let mut ret = Vec::new();
+        for item in vector {
+            ret.push(item.get_name())
+        }; ret
+    }
+
+    pub fn get_list_reply(&self) -> Vec<(String, String)> {
+        let vector = self.list_chans_ptr();
+        let mut out_vect = Vec::new();
+        for item in vector {
+            out_vect.push((item.get_name(), item.get_topic()));
+        } out_vect
+    }
+
     pub async fn part_chan(
         &self,
         chanmask: &str,
@@ -520,7 +547,7 @@ impl Core {
                     if let Some(chan) = Weak::upgrade(&chan_wptr) {
                         chan.update_nick(&old_nick, &new_nick);
                     } else {
-                        debug!("can't upgrade pointer to {}, deleting key", chan_name);
+                        debug!("try_nick_change(): can't upgrade pointer to {}, deleting key", chan_name);
                         chanlist_mutex_lock.remove(chan_name);
                     }
                 }
@@ -540,7 +567,7 @@ impl Core {
         let host = client.get_host();
         let id = client.get_id();
         let irc = client.get_irc();
-        debug!(
+        trace!(
             "register user {}!{}@{}, Real name: {} -- client id {}",
             &nick, &username, &host_str, &real_name, id
         );
@@ -568,7 +595,7 @@ impl Core {
 
         for channel in channels.iter() {
             if channel.is_empty() && self.remove_name(&channel.get_name()).is_ok() {
-                debug!("remove channel {} from IRC HashMap", &channel.get_name());
+                debug!("_search_user_chans(): remove channel {} from IRC HashMap", &channel.get_name());
             }
             if let Some(key) = channel.get_user_key(nick) {
                 chan_strings.push(channel.get_name());
@@ -608,9 +635,18 @@ pub async fn command(irc: &Arc<Core>, client: &Arc<Client>, params: ParsedMsg) -
         "JOIN" if registered => join(irc, &client.get_user(), params).await,
         "PART" if registered => part(irc, &client.get_user(), params).await,
         "TOPIC" if registered => topic(irc, &client.get_user(), params).await,
-        "PART" | "JOIN" | "PRIVMSG" | "NOTICE" | "TOPIC" if !registered => gef!(ircError::NotRegistered),
+        "LIST" if registered => list(irc, &client.get_user()).await,
+        "PART" | "JOIN" | "PRIVMSG" | "NOTICE" | "TOPIC" | "LIST" if !registered => gef!(ircError::NotRegistered),
         _ => gef!(ircError::UnknownCommand(params.command.to_string())),
     }
+}
+
+pub async fn list(irc: &Core, user: &Arc<User>) -> Result<ircReply, GenError> {
+    let tuple_vector = irc.get_list_reply();
+    for (chan, topic) in tuple_vector.iter() {
+        user.send_rpl(ircReply::ListReply(chan.to_string(), topic.to_string())).await;
+    }
+    Ok(ircReply::EndofList)
 }
 
 pub async fn topic(irc: &Core, user: &User, mut params: ParsedMsg) -> Result<ircReply, GenError> {
@@ -671,7 +707,7 @@ pub async fn part(irc: &Arc<Core>, user: &Arc<User>, mut params: ParsedMsg) -> R
     for target in targets.split(',') {
         match irc.part_chan(&target, user, &part_msg).await {
             Err(GenError::IRC(err)) => { user.send_err(err).await?; },
-            Err(err) => { debug!("{} PART {}: {}", user.get_nick(), target, err); },
+            Err(err) => { trace!("{} PART {}: {}", user.get_nick(), target, err); },
             _ => (),
         };
     }
@@ -700,7 +736,7 @@ pub async fn msg(
     // if there are more than two arguments,
     // concatenate the remainder to one string
     let message = params.opt_params.join(" ");
-    debug!("{} from user {} to {}, content: {}", cmd, send_u.get_nick(), targets, message);
+    trace!("{} from user {} to {}, content: {}", cmd, send_u.get_nick(), targets, message);
 
     // loop over targets
     for target in targets.split(',') {
@@ -724,7 +760,7 @@ pub async fn msg(
                 send_u.send_err(err).await?;
             },
             Err(any_err) => {
-                debug!("error sending message to {}: {}", target, any_err);
+                trace!("error sending message to {}: {}", target, any_err);
             },
             _ => (),
         }
