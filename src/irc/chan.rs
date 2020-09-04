@@ -77,36 +77,33 @@ impl Channel {
         }
     }
 
-    /* generate a vector of Arc pointers to users on this channel,
-     * remove any nicks from the tree if upgrade on the weak pointer
-     * fails */
-    pub fn gen_user_ptr_vec(&self) -> Vec<Arc<User>> {
-        let mut locked = self.users.lock().unwrap();
-        locked.iter()
-            .filter_map(|(key, val)|{
-                if let Some(ptr) = Weak::upgrade(&val.user_ptr) {
-                    Some(ptr)
-                } else {
-                    /* with iterator style it also seems
-                     * possible to remove the bad keys on the fly
-                     */
-                    debug!("remove bad key {} from chan {}", key, self.get_name());
-                    locked.remove(&key.clone());
-                    if locked.is_empty() {
-                        debug!("{} empty, unlink from irc::Core HashMap", self.get_name());
-                        self.irc.remove_name(&self.get_name());
-                    }; None
-                }
-        }).collect::<Vec<_>>()
-    }
-
     /* spit out a vector of (key, value) tuples */
     fn _get_user_list(&self) -> Vec<(String, ChanUser)> {
         self.users
             .lock()
             .unwrap()
+            .clone()
             .into_iter()
             .collect::<Vec<_>>()
+    }
+
+    /* generate a vector of Arc pointers to users on this channel,
+     * remove any nicks from the tree if upgrade on the weak pointer
+     * fails */
+    pub fn gen_user_ptr_vec(&self) -> Vec<Arc<User>> {
+        let mut bad_keys = Vec::new();
+        let mut ret = Vec::new();
+        for (key, val) in self._get_user_list().iter() {
+            if let Some(ptr) = Weak::upgrade(&val.user_ptr) {
+                ret.push(ptr);
+            } else {
+                bad_keys.push(key.clone());
+            }
+        }
+        for key in bad_keys.iter() {
+            self.users.lock().unwrap().remove(key);
+        }
+        ret
     }
 
     /* this one just gives the actual nicks themselves,
@@ -165,36 +162,75 @@ impl Channel {
     /* put add_ and rm_user() here together and have all the code to handle
      * that in one place, both for User and Chan side - plus, mutex lock
      * everything for the entire fn call */
-    pub fn add_user(self: &Arc<Self>, new_user: &Arc<User>, flags: ChanFlags) -> Result<(), ChanError> {
-        let mut chan_mutex_lock = self.users.lock().unwrap();
-        let mut user_mutex_lock = new_user.channel_list.lock().unwrap();
-        let nick = new_user.get_nick();
+    pub async fn add_user(self: &Arc<Self>, new_user: &Arc<User>, flags: ChanFlags) -> Result<ircReply, GenError> {
         let chan = self.get_name();
-        let chan_ptr = Arc::downgrade(&self);
+        {
+            let mut chan_mutex_lock = self.users.lock().unwrap();
+            let mut user_mutex_lock = new_user.channel_list.lock().unwrap();
+            let nick = new_user.get_nick();
+            let chan = self.get_name();
+            let chan_ptr = Arc::downgrade(&self);
 
-        if !chan_mutex_lock.contains_key(&nick) {
-            chan_mutex_lock.insert(nick, ChanUser::new(new_user, flags));
-            user_mutex_lock.insert(chan, chan_ptr);
-            Ok(())
-        } else {
-            Err(ChanError::LinkFailed(nick, chan))
-        }
+            if !chan_mutex_lock.contains_key(&nick) {
+                chan_mutex_lock.insert(nick, ChanUser::new(new_user, flags));
+                user_mutex_lock.insert(chan, chan_ptr);
+
+                
+            } else {
+                return Ok(ircReply::None) /* already on chan */
+            }
+        } /* de-scope mutex locks */
+
+        /* also self.notify_join() */
+        let _res = self.notify_join(new_user, &chan);
+
+        new_user.send_rpl(
+            ircReply::Topic(
+                chan.to_string(),
+                self.get_topic()
+            )
+        ).await?;
+
+        new_user.send_rpl(
+            ircReply::NameReply(
+                chan.to_string(),
+                self.get_nick_list()
+            )
+        ).await?;
+        Ok(ircReply::EndofNames(chan.to_string()))
+    }
+
+    /* still need this for User::drop() */
+    pub fn rm_key(&self, key: &str) -> Option<ChanUser> {
+        self.users.lock().unwrap().remove(key)
     }
 
     /* put add_ and rm_user() here together and have all the code to handle
      * that in one place, both for User and Chan side - plus, mutex lock
      * everything for the entire fn call */
-    pub fn rm_user(&self, user: &User) -> Result<(), ChanError> {
-        let mut chan_mutex_lock = self.users.lock().unwrap();
-        let mut user_mutex_lock = user.channel_list.lock().unwrap();
+    pub async fn rm_user(&self, user: &User, msg: &str) -> Result<(), ChanError> {
+        let retval = {
+            let mut chan_mutex_lock = self.users.lock().unwrap();
+            let mut user_mutex_lock = user.channel_list.lock().unwrap();
 
-        let key = user.get_nick().to_string();
-        let chan = self.get_name();
-        if let Some(val) = chan_mutex_lock.remove(&key) {
-            user_mutex_lock.remove(&chan); Ok(())
-        } else {
-            Err(ChanError::UnlinkFailed(key, chan))
+            let key = user.get_nick().to_string();
+            let chan = self.get_name();
+            if let Some(val) = chan_mutex_lock.remove(&key) {
+                user_mutex_lock.remove(&chan);
+                if chan_mutex_lock.is_empty() {
+                    self.irc.remove_name(&chan);
+                }
+                Ok(())
+            } else {
+                Err(ChanError::UnlinkFailed(key, chan))
+            }
+        }; /* de-scope Mutex */
+
+        /* Notify part msg */
+        if !self.is_empty() {
+            let _res = self.notify_part(user, &self.get_name(), msg).await;
         }
+        retval
     }
 
     /* similar rationale to the above about linking and unlinking users to chans */
