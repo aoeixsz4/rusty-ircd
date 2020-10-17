@@ -19,6 +19,7 @@ extern crate log;
 use crate::irc::chan::{Channel, ChanError};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
+use crate::irc::reply as reply;
 use crate::irc::{self, Core, User, NamedEntity};
 use crate::parser::{parse_message, ParseError};
 use std::error;
@@ -158,6 +159,7 @@ impl Clone for ClientType {
 }
 
 type MsgRecvr = mpsc::Receiver<String>;
+pub type ClientReplies = Vec<Result<ircReply, ircError>>;
 
 pub async fn run_write_task(sock: OwnedWriteHalf, mut rx: MsgRecvr) -> Result<(), ioError> {
     /* apparently we can't have ? after await on any of these
@@ -285,8 +287,14 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
                 let _res = irc.search_user_chans_purge(&nick);
                 irc.remove_name(&nick);
             },
-            Ok(ircReply::None) => (),
-            Ok(rpl) => { handler.client.get_user().send_rpl(rpl).await?; }
+            Ok(replies) => {
+                for result_t in replies {
+                    match result_t {
+                        Ok(reply) => handler.client.send_rpl(reply).await?,
+                        Err(err) => handler.client.send_err(err).await?
+                    }
+                }
+            },
         }
     }
     Ok(())
@@ -295,7 +303,7 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
 /* wrapping these two fn calls in this function allows easy error composition,
  * and let's the caller process_lines() catch any errors, relaying parser or
  * IRC errors back to the client, or dropping the client on I/O error */
-async fn error_wrapper (client: &Arc<Client>, irc: &Arc<Core>, line: &str) -> Result<ircReply, GenError> {
+async fn error_wrapper (client: &Arc<Client>, irc: &Arc<Core>, line: &str) -> Result<ClientReplies, GenError> {
     let parsed = parse_message(line)?;
     irc::command(irc, client, parsed).await
 }
@@ -446,6 +454,26 @@ impl Client {
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
         self.send_line(&line).await?;
+        Ok(())
+    }
+    
+    pub async fn send_rpl(&self, reply: ircReply) -> Result<(), GenError> { /* GDB+ */
+        /* passing to an async fn and awaiting on it is gonna
+         * cause lifetime problems with a &str... */
+        let host = self.irc.get_host();
+        let mut line = reply.format(&self.irc.get_host(), &self.get_user().get_nick());
+        /* break up long messages if neccessary,
+         * reply::split essentially returns line, None when
+         * line is not larger than MAX_MSG_SIZE */
+        loop {
+            let (trim, rest_opt) = reply::split(&line);
+            self.send_line(&trim).await?;
+            if let Some(rest) = rest_opt {
+                line = rest;
+            } else {
+                break;
+            }
+        }
         Ok(())
     }
 
