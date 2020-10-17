@@ -1,9 +1,5 @@
-macro_rules! gef {
-    ($e:expr) => (Err(GenError::from($e)));
-}
-
 extern crate log;
-use crate::client::GenError;
+use crate::client::{ClientReply, ClientReplies, GenError};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::{Core, User};
@@ -13,7 +9,7 @@ use std::collections::BTreeMap;
 use std::{error, fmt};
 use std::sync::{Arc, Mutex, Weak};
 
-use log::debug;
+use log::{debug,warn};
 
 #[derive(Debug)]
 pub enum ChanError {
@@ -162,8 +158,9 @@ impl Channel {
     /* put add_ and rm_user() here together and have all the code to handle
      * that in one place, both for User and Chan side - plus, mutex lock
      * everything for the entire fn call */
-    pub async fn add_user(self: &Arc<Self>, new_user: &Arc<User>, flags: ChanFlags) -> Result<ircReply, GenError> {
+    pub async fn add_user(self: &Arc<Self>, new_user: &Arc<User>, flags: ChanFlags) -> Result<ClientReplies, GenError> {
         let chan = self.get_name();
+        let mut replies = Vec::new();
         {
             let mut chan_mutex_lock = self.users.lock().unwrap();
             let mut user_mutex_lock = new_user.channel_list.lock().unwrap();
@@ -177,27 +174,16 @@ impl Channel {
 
                 
             } else {
-                return Ok(ircReply::None) /* already on chan */
+                return Ok(replies) /* already on chan */
             }
         } /* de-scope mutex locks */
 
         /* also self.notify_join() */
-        let _res = self.notify_join(new_user, &chan);
-
-        new_user.send_rpl(
-            ircReply::Topic(
-                chan.to_string(),
-                self.get_topic()
-            )
-        ).await?;
-
-        new_user.send_rpl(
-            ircReply::NameReply(
-                chan.to_string(),
-                self.get_nick_list()
-            )
-        ).await?;
-        Ok(ircReply::EndofNames(chan.to_string()))
+        replies.push(self.notify_join(new_user, &chan).await?);
+        replies.push(Ok(ircReply::Topic(chan.to_string(), self.get_topic())));
+        replies.push(Ok(ircReply::NameReply(chan.to_string(), self.get_nick_list())));
+        replies.push(Ok(ircReply::EndofNames(chan.to_string())));
+        Ok(replies)
     }
 
     /* still need this for User::drop() */
@@ -215,10 +201,12 @@ impl Channel {
 
             let key = user.get_nick().to_string();
             let chan = self.get_name();
-            if let Some(val) = chan_mutex_lock.remove(&key) {
+            if let Some(_val) = chan_mutex_lock.remove(&key) {
                 user_mutex_lock.remove(&chan);
                 if chan_mutex_lock.is_empty() {
-                    self.irc.remove_name(&chan);
+                    if let Err(err) = self.irc.remove_name(&chan) {
+                        warn!("error {} removing chan {} from hash - it doesn't exist", err, &chan);
+                    }
                 }
                 Ok(())
             } else {
@@ -251,7 +239,7 @@ impl Channel {
         command_str: &str,
         target: &str,
         msg: &str
-    ) -> Result<ircReply, GenError> {
+    ) -> Result<ClientReply, GenError> {
         // checks for banmasks should be done-
         // also whether the sending user is in the channel or not
         let prefix = source.get_prefix();
@@ -273,25 +261,25 @@ impl Channel {
                     }
                 }
             }
-            Ok(ircReply::None)
+            Ok(Ok(ircReply::None))
         } else {
-            gef!(ircError::CannotSendToChan(target.to_string()))
+            Ok(Err(ircError::CannotSendToChan(target.to_string())))
         }
     }
 
-    pub async fn send_msg(&self, source: &User, cmd: &str, target: &str, msg: &str) -> Result<ircReply, GenError> {
+    pub async fn send_msg(&self, source: &User, cmd: &str, target: &str, msg: &str) -> Result<ClientReply, GenError> {
         self._send_msg(source, cmd, target, msg).await
     }
 
-    pub async fn notify_join(&self, source: &User, chan: &str) -> Result<ircReply, GenError> {
+    pub async fn notify_join(&self, source: &User, chan: &str) -> Result<ClientReply, GenError> {
         self._send_msg(source, "JOIN", chan, "").await
     }
 
-    pub async fn notify_part(&self, source: &User, chan: &str, msg: &str) -> Result<ircReply, GenError> {
+    pub async fn notify_part(&self, source: &User, chan: &str, msg: &str) -> Result<ClientReply, GenError> {
         self._send_msg(source, "PART", chan, msg).await
     }
 
-    pub async fn notify_quit(&self, source: &User, chan: &str, msg: &str) -> Result<ircReply, GenError> {
+    pub async fn notify_quit(&self, source: &User, chan: &str, msg: &str) -> Result<ClientReply, GenError> {
         self._send_msg(source, "QUIT", chan, msg).await
     }
 }

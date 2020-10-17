@@ -20,7 +20,7 @@ pub mod reply;
 pub mod rfc_defs;
 use crate::RUSTY_IRCD_VERSION;
 use crate::client;
-use crate::client::{Client, ClientType, ClientReplies, GenError, Host};
+use crate::client::{Client, ClientType, ClientReply, ClientReplies, GenError, Host};
 use crate::irc::chan::{ChanFlags, Channel};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
@@ -29,7 +29,7 @@ use crate::parser::ParsedMsg;
 extern crate log;
 extern crate chrono;
 use chrono::Utc;
-use log::{debug, info, trace};
+use log::{debug, warn, trace};
 use std::clone::Clone;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -134,10 +134,14 @@ impl User {
             }).for_each(|chan|{
                 chan.rm_key(&self.get_nick());
                 if chan.is_empty() {
-                    self.irc.remove_name(&chan.get_name());
+                    if let Err(err) = self.irc.remove_name(&chan.get_name()) {
+                        warn!("error {} removing non-existant channel {}", err, &chan.get_name());
+                    }
                 }
             });
-        self.irc.remove_name(&self.get_nick());
+        if let Err(err) = self.irc.remove_name(&self.get_nick()) {
+            warn!("error {} removing non-existant nick {}", err, &self.get_nick());
+        }
     }
 
     /* attempt to find and upgrade a pointer to the user's client,
@@ -217,7 +221,7 @@ impl User {
         command_str: &str,
         target: &str,
         msg: &str
-    ) -> Result<ircReply, GenError> { /* GDB+ */
+    ) -> Result<ClientReply, GenError> { /* GDB+ */
         let prefix = src.get_prefix();
         let line = format!(":{} {} {} :{}", &prefix, command_str, target, msg);
         /* instead of unwrap(), fetch_client() tries to upgrade the pointer,
@@ -227,7 +231,7 @@ impl User {
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
         my_client.send_line(&line).await?;
-        Ok(ircReply::None)
+        Ok(Ok(ircReply::None))
     }
 
     pub async fn send_err(self: &Arc<Self>, err: ircError) -> Result<ircReply, GenError> { /* GDB+ */
@@ -242,7 +246,6 @@ impl User {
     pub async fn send_rpl(self: &Arc<Self>, reply: ircReply) -> Result<ircReply, GenError> { /* GDB+ */
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
-        let host = self.irc.get_host();
         let mut line = reply.format(&self.get_server(), &self.get_nick());
         let my_client = self.fetch_client()?;
         /* break up long messages if neccessary,
@@ -392,7 +395,7 @@ impl Core {
     }
 
     pub fn list_chans_ptr(&self) -> Vec<Arc<Channel>> {
-        let mut mutex_lock = self.namespace.lock().unwrap();
+        let mutex_lock = self.namespace.lock().unwrap();
         let mut ret = Vec::new();
         for ent in mutex_lock.values() {
             if let NamedEntity::Chan(chan) = ent {
@@ -403,7 +406,7 @@ impl Core {
     }
 
     pub fn list_chans_str(&self) -> Vec<String> {
-        let mut vector = self.list_chans_ptr();
+        let vector = self.list_chans_ptr();
         let mut ret = Vec::new();
         for item in vector {
             ret.push(item.get_name())
@@ -439,16 +442,18 @@ impl Core {
         Ok(ircReply::None)
     }
 
-    pub async fn join_chan(self: &Arc<Core>, chanmask: &str, user: &Arc<User>) -> Result<ircReply, GenError> {
+    pub async fn join_chan(self: &Arc<Core>, chanmask: &str, user: &Arc<User>) -> Result<ClientReplies, GenError> {
+        let mut replies = Vec::new();
         if !rfc::valid_channel(chanmask) {
-            return gef!(ircError::NoSuchChannel(chanmask.to_string()));
+            replies.push(Err(ircError::NoSuchChannel(chanmask.to_string())));
+            return Ok(replies);
         }
         let nick = user.get_nick();
         match self.get_chan(chanmask) {
             Ok(chan) => {
                 /* need to check if user is already in chan */
                 if chan.is_joined(&nick) {
-                    return Ok(ircReply::None);
+                    return Ok(replies);
                 }
                 chan.add_user(user, ChanFlags::None).await
             },
@@ -479,7 +484,9 @@ impl Core {
                 /* update channels list */
                 for (chan_name, chan_wptr) in chanlist_mutex_lock.clone().iter() {
                     if let Some(chan) = Weak::upgrade(&chan_wptr) {
-                        chan.update_nick(&old_nick, &new_nick);
+                        if let Err(err) = chan.update_nick(&old_nick, &new_nick) {
+                            warn!("try to update nick {} in chan {} despite not being in chan, error: {}", &chan_name, &old_nick, err);
+                        }
                     } else {
                         debug!("try_nick_change(): can't upgrade pointer to {}, deleting key", chan_name);
                         chanlist_mutex_lock.remove(chan_name);
@@ -572,13 +579,13 @@ pub async fn command(irc: &Arc<Core>, client: &Arc<Client>, params: ParsedMsg) -
         "JOIN" if registered => join(irc, &client.get_user(), params).await,
         "PART" if registered => part(irc, &client.get_user(), params).await,
         "TOPIC" if registered => topic(irc, &client.get_user(), params).await,
-        "LIST" if registered => list(irc, &client.get_user()).await,
+        "LIST" if registered => list(irc).await,
         "PART" | "JOIN" | "PRIVMSG" | "NOTICE" | "TOPIC" | "LIST" if !registered => gef!(ircError::NotRegistered),
         _ => gef!(ircError::UnknownCommand(params.command.to_string())),
     }
 }
 
-pub async fn list(irc: &Core, user: &Arc<User>) -> Result<ClientReplies, GenError> {
+pub async fn list(irc: &Core) -> Result<ClientReplies, GenError> {
     let tuple_vector = irc.get_list_reply();
     let mut replies = Vec::new();
     for (chan, topic) in tuple_vector.iter() {
@@ -630,11 +637,7 @@ pub async fn join(irc: &Arc<Core>, user: &Arc<User>, mut params: ParsedMsg) -> R
      * but I'll leave key implementation til later */
     let targets = params.opt_params.remove(0);
     for target in targets.split(',') {
-        match irc.join_chan(&target, user).await {
-            Err(GenError::IRC(err)) => replies.push(Err(err)),
-            Err(other_err) => return Err(other_err),
-            Ok(reply) => replies.push(Ok(reply)),
-        };
+        replies.append(&mut irc.join_chan(&target, user).await?);
     }
     Ok(replies)
 }
@@ -691,31 +694,25 @@ pub async fn msg(
 
     // loop over targets
     for target in targets.split(',') {
-        let result = match irc.get_name(target) {
+        match irc.get_name(target) {
             Some(NamedEntity::User(user_weak)) => {
                 match User::upgrade(&user_weak, target) {
-                    Ok(recv_u) => recv_u.send_msg(&send_u, &cmd, &target, &message).await,
+                    Ok(recv_u) => {
+                        replies.push(recv_u.send_msg(&send_u, &cmd, &target, &message).await?);
+                    },
                     Err(GenError::DeadUser(nick)) => {
                         let _res = irc.search_user_chans_purge(&nick);
-                        irc.remove_name(&nick);
-                        Err(GenError::DeadUser(nick))
+                        if let Err(err) = irc.remove_name(&nick) {
+                            warn!("error {} removing nick {} from hash, but it doesn't exist", err, &nick)
+                        }
                     },
-                    Err(e) => Err(e),
+                    /* this may be a more serious error & will abort processing the join command */
+                    Err(e) => return Err(e),
                 }
             },
             Some(NamedEntity::Chan(chan))
-                => chan.send_msg(&send_u, &cmd, &target, &message).await,
-            None => gef!(ircError::NoSuchNick(target.to_string()))
-        };
-        match result {
-            Err(GenError::IRC(err)) if !notice => {
-                replies.push(Err(err));
-            },
-            Err(any_err) => {
-                trace!("error sending message to {}: {}", target, any_err);
-                return Err(any_err);
-            },
-            _ => (),
+                => replies.push(chan.send_msg(&send_u, &cmd, &target, &message).await?),
+            None => replies.push(Err(ircError::NoSuchNick(target.to_string())))
         }
     }
     Ok(replies)
