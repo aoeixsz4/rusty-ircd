@@ -14,9 +14,6 @@
 *  You should have received a copy of the GNU Lesser General Public License
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
-macro_rules! gef {
-    ($e:expr) => (Err(GenError::from($e)));
-}
 pub mod chan;
 pub mod error;
 pub mod reply;
@@ -33,6 +30,11 @@ use log::{debug, info, trace};
 use std::clone::Clone;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
+
+
+macro_rules! gef {
+    ($e:expr) => (Err(GenError::from($e)));
+}
 
 #[derive(Debug)]
 pub enum NamedEntity {
@@ -61,6 +63,7 @@ pub struct User {
     username: String,
     real_name: Mutex<String>,
     host: Host,
+    server: String,
     channel_list: Mutex<HashMap<String, Weak<Channel>>>,
     flags: Mutex<UserFlags>,
     irc: Arc<Core>,
@@ -75,6 +78,7 @@ impl Clone for User {
             username: self.username.clone(),
             real_name: Mutex::new(self.real_name.lock().unwrap().clone()),
             host: self.host.clone(),
+            server: self.server.clone(),
             channel_list: Mutex::new(self.channel_list.lock().unwrap().clone()),
             flags: Mutex::new(self.flags.lock().unwrap().clone()),
             irc: Arc::clone(&self.irc),
@@ -98,6 +102,7 @@ impl User {
         username: String,
         real_name: String,
         host: client::Host,
+        server: String,
         client: &Arc<Client>,
     ) -> Arc<Self> {
         Arc::new(User {
@@ -107,6 +112,7 @@ impl User {
             username,
             real_name: Mutex::new(real_name),
             host,
+            server,
             channel_list: Mutex::new(HashMap::new()),
             client: Arc::downgrade(client),
             flags: Mutex::new(UserFlags { registered: true }), /*channel_list: Mutex::new(Vec::new())*/
@@ -198,6 +204,10 @@ impl User {
         )
     }
 
+    pub fn get_server(&self) -> String {
+        self.server.clone()
+    }
+
     pub async fn send_msg(
         self: &Arc<Self>,
         src: &User,
@@ -230,40 +240,21 @@ impl User {
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
         let host = self.irc.get_host();
-        let line = format!(":{} {}", host, reply);
-        if line.len() > rfc::MAX_MSG_SIZE - 2 {
-            match reply {
-                /* not all can be recursed */
-                ircReply::NameReply(chan, mut nick_vec) => {
-                    /* "353 {} :{}<CR><LF>" */
-                    let overhead = rfc::MAX_MSG_PARAMS - (10 + chan.len() + host.len());
-                    let mut vec_len = nick_vec.len();
-                    let mut i = 0;
-                    let mut sum = 0;
-
-                    /* count how many strings we can fit */
-                    while i < vec_len {
-                        if sum + nick_vec[i].len() >= overhead {
-                            let temp = nick_vec.split_off(i);
-                            let line = format!(":{} {}", host, ircReply::NameReply(chan.clone(), nick_vec));
-                            let my_client = self.fetch_client()?;
-                            my_client.send_line(&line).await?;
-                            nick_vec = temp;
-                            i = 0;
-                            sum = 0;
-                            vec_len = nick_vec.len();
-                        }
-                    }
-
-                    Ok(ircReply::None)
-                }
-                _ => Ok(ircReply::None),
+        let mut line = reply.format(&self.get_server(), &self.get_nick());
+        let my_client = self.fetch_client()?;
+        /* break up long messages if neccessary,
+         * reply::split essentially returns line, None when
+         * line is not larger than MAX_MSG_SIZE */
+        loop {
+            let (trim, rest_opt) = reply::split(&line);
+            my_client.send_line(&trim).await?;
+            if let Some(rest) = rest_opt {
+                line = rest;
+            } else {
+                break;
             }
-        } else {
-            let my_client = self.fetch_client()?;
-            my_client.send_line(&line).await?;
-            Ok(ircReply::None)
         }
+        Ok(ircReply::None)
     }
 
     pub async fn send_line(self: &Arc<Self>, line: &str) -> Result<ircReply, GenError> { /* GDB++ */
@@ -483,6 +474,7 @@ impl Core {
         let host = client.get_host();
         let id = client.get_id();
         let irc = client.get_irc();
+        let server = irc.hostname.clone();
         trace!(
             "register user {}!{}@{}, Real name: {} -- client id {}",
             &nick, &username, &host_str, &real_name, id
@@ -494,6 +486,7 @@ impl Core {
             username,
             real_name,
             host.clone(),
+            server,
             client,
         );
         self.insert_name(&nick, NamedEntity::User(Arc::downgrade(&user)))?;
@@ -737,8 +730,13 @@ pub async fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result
 
     if let Some(new_client_type) = result {
         client.set_client_type(new_client_type);
+        /* really we want a way to return multiple replies in a queue */
+        Ok(ircReply::Welcome(client.get_user().get_nick(),
+                             client.get_user().get_username(),
+                             client.get_host_string()))
+    } else {
+        Ok(ircReply::None)
     }
-    Ok(ircReply::None)
 }
 
 pub async fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<ircReply, GenError> {
@@ -803,6 +801,11 @@ pub async fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result
 
     if let Some(new_client_type) = result {
         client.set_client_type(new_client_type);
+        /* really we want a way to return multiple replies in a queue */
+        Ok(ircReply::Welcome(client.get_user().get_nick(),
+                             client.get_user().get_username(),
+                             client.get_host_string()))
+    } else {
+        Ok(ircReply::None)
     }
-    Ok(ircReply::None)
 }
