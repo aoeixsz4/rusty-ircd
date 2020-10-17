@@ -21,7 +21,7 @@ pub mod rfc_defs;
 use crate::{USER_MODES, CHAN_MODES};
 use crate::client;
 use crate::client::{Client, ClientType, ClientReply, ClientReplies, GenError, Host};
-use crate::irc::chan::{ChanFlags, Channel};
+use crate::irc::chan::{ChanFlags, Channel, ChanTopic};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::rfc_defs as rfc;
@@ -413,11 +413,11 @@ impl Core {
         }; ret
     }
 
-    pub fn get_list_reply(&self) -> Vec<(String, String)> {
+    pub fn get_list_reply(&self) -> Vec<(Arc<Channel>, Option<ChanTopic>)> {
         let vector = self.list_chans_ptr();
         let mut out_vect = Vec::new();
         for item in vector {
-            out_vect.push((item.get_name(), item.get_topic()));
+            out_vect.push((Arc::clone(&item), item.get_topic()));
         } out_vect
     }
 
@@ -589,7 +589,7 @@ pub async fn list(irc: &Core) -> Result<ClientReplies, GenError> {
     let tuple_vector = irc.get_list_reply();
     let mut replies = Vec::new();
     for (chan, topic) in tuple_vector.iter() {
-        replies.push(Ok(ircReply::ListReply(chan.to_string(), topic.to_string())));
+        replies.push(Ok(ircReply::ListReply(chan.get_name(), chan.get_n_users(), topic.clone())));
     }
     replies.push(Ok(ircReply::EndofList));
     Ok(replies)
@@ -612,13 +612,18 @@ pub async fn topic(irc: &Core, user: &User, mut params: ParsedMsg) -> Result<Cli
 
     /* just want to receive topic? */
     if params.opt_params.is_empty() {
-        replies.push(Ok(ircReply::Topic(chanmask, chan.get_topic())));
+        if let Some(topic) = chan.get_topic() {
+            replies.push(Ok(ircReply::Topic(chanmask.clone(), topic.text)));
+            replies.push(Ok(ircReply::TopicSetBy(chanmask, topic.usermask, topic.timestamp)));
+        } else {
+            replies.push(Ok(ircReply::NoTopic(chanmask)));
+        }
         return Ok(replies);
     };
     
     /* set topic IF permissions allow */
     if chan.is_op(user) {
-        chan.set_topic(&params.opt_params.remove(0));
+        chan.set_topic(&params.opt_params.remove(0), &user);
     } else {
         replies.push(Err(ircError::ChanOPrivsNeeded(chanmask)));
     }
