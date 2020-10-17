@@ -1,5 +1,5 @@
 /* rusty-ircd - an IRC daemon written in Rust
-*  Copyright (C) Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
+*  Copyright (C) 2020 Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
 
 *  This program is free software: you can redistribute it and/or modify
 *  it under the terms of the GNU Lesser General Public License as

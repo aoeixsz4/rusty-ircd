@@ -1,5 +1,5 @@
 /* rusty-ircd - an IRC daemon written in Rust
-*  Copyright (C) Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
+*  Copyright (C) 2020 Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
 
 *  This program is free software: you can redistribute it and/or modify
 *  it under the terms of the GNU Lesser General Public License as
@@ -20,13 +20,16 @@ extern crate tokio;
 
 pub mod irc;
 pub mod client;
+pub mod io;
 pub mod parser;
 use crate::client::{run_client_handler, run_write_task, Host};
+use crate::io::{ReadHalfWrap, WriteHalfWrap};
 use crate::irc::Core;
 use dns_lookup::lookup_addr;
 use std::io::Error as ioError;
 use std::net::IpAddr;
 use std::sync::Arc;
+use tokio::io::split;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task;
@@ -50,9 +53,15 @@ async fn process_socket(sock: TcpStream, irc: Arc<Core>) -> Result<(), ioError> 
     let ip_address = sock.peer_addr()?.ip();
     let host = task::spawn_blocking(move || get_host(ip_address)).await??;
     let (tx, rx) = mpsc::channel(32);
-    let (read, write) = sock.into_split();
-    tokio::spawn(run_write_task(write, rx));
-    tokio::spawn(run_client_handler(id, host, irc, tx, read));
+    let (read, write) = split(sock);
+    tokio::spawn(run_write_task(WriteHalfWrap::ClearText(write), rx));
+    tokio::spawn(run_client_handler(
+        id,
+        host,
+        irc,
+        tx,
+        ReadHalfWrap::ClearText(read),
+    ));
     Ok(())
 }
 

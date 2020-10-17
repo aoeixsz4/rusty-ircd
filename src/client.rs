@@ -1,5 +1,5 @@
 /* rusty-ircd - an IRC daemon written in Rust
-*  Copyright (C) Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
+*  Copyright (C) 2020 Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>
 
 *  This program is free software: you can redistribute it and/or modify
 *  it under the terms of the GNU Lesser General Public License as
@@ -15,13 +15,14 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 extern crate tokio;
-extern crate log;
-use crate::irc::chan::ChanError;
+use crate::io::{ReadHalfWrap, WriteHalfWrap};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::reply as reply;
 use crate::irc::{self, Core, User, NamedEntity};
 use crate::parser::{parse_message, ParseError};
+use crate::irc::chan::ChanError;
+extern crate log;
 use std::error;
 use std::fmt;
 use std::io::Error as ioError;
@@ -29,7 +30,6 @@ use std::net::IpAddr;
 use std::sync::{Arc, Weak, Mutex};
 use log::{debug, warn};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError as mpscSendErr;
 
@@ -129,13 +129,6 @@ impl Clone for Host {
     }
 }
 
-pub fn create_host_string(host_var: &Host) -> String {
-    match host_var {
-        Host::Hostname(hostname_str) => hostname_str.to_string(),
-        Host::HostAddr(ip_addr) => ip_addr.to_string(),
-    }
-}
-
 #[derive(Debug)]
 pub enum ClientType {
     Dead,
@@ -162,7 +155,7 @@ type MsgRecvr = mpsc::Receiver<String>;
 pub type ClientReply = Result<ircReply, ircError>;
 pub type ClientReplies = Vec<ClientReply>;
 
-pub async fn run_write_task(sock: OwnedWriteHalf, mut rx: MsgRecvr) -> Result<(), ioError> {
+pub async fn run_write_task(sock: WriteHalfWrap, mut rx: MsgRecvr) -> Result<(), ioError> {
     /* apparently we can't have ? after await on any of these
      * functions, because await returns (), but recv() and
      * write_all()/flush() shouldn't return (), should they? */
@@ -179,7 +172,7 @@ pub async fn run_client_handler(
     host: Host,
     irc: Arc<Core>,
     tx: MsgSendr,
-    sock: OwnedReadHalf,
+    sock: ReadHalfWrap,
 ) {
     let mut handler = ClientHandler::new(id, host, &irc, tx, sock);
     irc.insert_client(handler.id, Arc::downgrade(&handler.client));
@@ -350,13 +343,13 @@ pub fn attempt_cleanup(irc: &Core, user: Arc<User>) {
 
 #[derive(Debug)]
 pub struct ClientHandler {
-    stream: Lines<BufReader<OwnedReadHalf>>,
+    stream: Lines<BufReader<ReadHalfWrap>>,
     client: Arc<Client>,
     id: u64,
 }
 
 impl ClientHandler {
-    pub fn new(id: u64, host: Host, irc: &Arc<Core>, tx: MsgSendr, sock: OwnedReadHalf) -> Self {
+    pub fn new(id: u64, host: Host, irc: &Arc<Core>, tx: MsgSendr, sock: ReadHalfWrap) -> Self {
         ClientHandler {
             stream: BufReader::new(sock).lines(),
             client: Client::new(id, host, irc, tx),
@@ -486,5 +479,12 @@ impl Client {
          * Arc/Mutex wrapping, or the problems of holding
          * a mutex across an await */
         self.tx.clone().send(string).await
+    }
+}
+
+pub fn create_host_string(host_var: &Host) -> String {
+    match host_var {
+        Host::Hostname(hostname_str) => hostname_str.to_string(),
+        Host::HostAddr(ip_addr) => ip_addr.to_string(),
     }
 }
