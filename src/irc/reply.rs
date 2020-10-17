@@ -81,7 +81,7 @@ impl Reply {
 
     /* convert reply codes to strings */
     fn reply_code(&self) -> CodeStr {
-        self.numeric().to_string()
+        format!("{:03}", self.numeric())
     }
 
     /* the body is everything in the reply after :<server> <Code> <recipient> */
