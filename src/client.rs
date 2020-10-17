@@ -16,7 +16,7 @@
 */
 extern crate tokio;
 extern crate log;
-use crate::irc::chan::{Channel, ChanError};
+use crate::irc::chan::ChanError;
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::reply as reply;
@@ -159,7 +159,8 @@ impl Clone for ClientType {
 }
 
 type MsgRecvr = mpsc::Receiver<String>;
-pub type ClientReplies = Vec<Result<ircReply, ircError>>;
+pub type ClientReply = Result<ircReply, ircError>;
+pub type ClientReplies = Vec<ClientReply>;
 
 pub async fn run_write_task(sock: OwnedWriteHalf, mut rx: MsgRecvr) -> Result<(), ioError> {
     /* apparently we can't have ? after await on any of these
@@ -201,12 +202,11 @@ pub async fn run_client_handler(
      * of this function, so it doesn't make sense to have any
      * return value, instead some diagnostics should be printed
      * here if there is any error */
-    let death_reason = if let Err(err) = res {
+    if let Err(err) = res {
         debug!("Client {} exited with error {}", handler.id, err);
-        format!("{}", err)
     } else {
-        "Unexpected EOF".to_string()
-    };
+        debug!("{}", "Unexpected EOF".to_string());
+    }
     /* All the cleanup stuff should just happen on Drop, so I've commented
      * a bunch out for now */
 
@@ -285,7 +285,9 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
             Err(GenError::DeadClient(user)) => attempt_cleanup(irc, user),
             Err(GenError::DeadUser(nick)) => {
                 let _res = irc.search_user_chans_purge(&nick);
-                irc.remove_name(&nick);
+                if let Err(err) = irc.remove_name(&nick) {
+                    warn!("received error {} trying to remove dead user {}", err, nick.to_string());
+                }
             },
             Ok(replies) => {
                 for result_t in replies {
@@ -460,7 +462,6 @@ impl Client {
     pub async fn send_rpl(&self, reply: ircReply) -> Result<(), GenError> { /* GDB+ */
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
-        let host = self.irc.get_host();
         let mut line = reply.format(&self.irc.get_host(), &self.get_user().get_nick());
         /* break up long messages if neccessary,
          * reply::split essentially returns line, None when

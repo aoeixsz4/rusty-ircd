@@ -69,7 +69,7 @@ impl Reply {
             Reply::Welcome(_n, _u, _h) => 001,
             Reply::YourHost(_s,_v) => 002,
             Reply::Created(_t) => 003,
-            Reply::MyInfo(_s, _v, _uM, _cM) => 004,
+            Reply::MyInfo(_s, _v, _um, _cm) => 004,
             Reply::None => 300,
             Reply::ListReply(_ch, _top) => 322,
             Reply::EndofList => 323,
@@ -154,8 +154,9 @@ pub fn split(message: &str) -> (String, Option<String>) {
 fn rfind_space_index (bytes: &[u8], mut index: usize) -> Option<usize> {
     while index > 0 {
         if bytes[index] == b' ' {
-            return Some(index)
+            return Some(index);
         }
+        index -= 1;
     }
     None
 }
