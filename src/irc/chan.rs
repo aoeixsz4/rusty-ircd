@@ -1,9 +1,11 @@
 extern crate log;
+extern crate chrono;
 use crate::client::{ClientReply, ClientReplies, GenError};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::{Core, User};
 
+use chrono::Utc;
 use std::clone::Clone;
 use std::collections::BTreeMap;
 use std::{error, fmt};
@@ -50,9 +52,26 @@ impl ChanUser {
 }
 
 #[derive(Debug)]
+pub struct ChanTopic {
+    pub text: String,
+    pub usermask: String,
+    pub timestamp: i64
+}
+
+impl Clone for ChanTopic {
+    fn clone(&self) -> Self {
+        ChanTopic {
+            text: self.text.clone(),
+            usermask: self.usermask.clone(),
+            timestamp: self.timestamp
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Channel {
     name: String,
-    topic: Mutex<String>,
+    topic: Mutex<Option<ChanTopic>>,
     users: Mutex<BTreeMap<String, ChanUser>>,
     banmasks: Mutex<Vec<String>>,
     irc: Arc<Core>,
@@ -61,7 +80,7 @@ pub struct Channel {
 impl Channel {
     pub fn new(irc: &Arc<Core>, chanmask: &str) -> Channel {
         let name = chanmask.to_string();
-        let topic = Mutex::new(String::from(""));
+        let topic = Mutex::new(None);
         let users = Mutex::new(BTreeMap::new());
         let banmasks = Mutex::new(Vec::new());
         Channel {
@@ -126,12 +145,24 @@ impl Channel {
             }).collect::<Vec<_>>()
     }
 
-    pub fn get_topic(&self) -> String {
-        self.topic.lock().unwrap().to_string()
+    pub fn get_n_users(&self) -> usize {
+        self.users.lock().unwrap().len()
     }
 
-    pub fn set_topic(&self, topic: &str) {
-        *self.topic.lock().unwrap() = topic.to_string()
+    pub fn get_topic(&self) -> Option<ChanTopic> {
+        match self.topic.lock().unwrap().clone() {
+            Some(topic) => Some(topic.clone()),
+            None => None
+        }
+    }
+
+    pub fn set_topic(&self, topic_text: &str, user: &User) {
+        let topic = ChanTopic {
+            text: topic_text.to_string(),
+            usermask: user.get_prefix(),
+            timestamp: Utc::now().timestamp()
+        };
+        *self.topic.lock().unwrap() = Some(topic);
     }
 
     pub fn get_name(&self) -> String {
@@ -180,7 +211,10 @@ impl Channel {
 
         /* also self.notify_join() */
         replies.push(self.notify_join(new_user, &chan).await?);
-        replies.push(Ok(ircReply::Topic(chan.to_string(), self.get_topic())));
+        if let Some(topic) = self.get_topic() {
+            replies.push(Ok(ircReply::Topic(chan.to_string(), topic.text)));
+            replies.push(Ok(ircReply::TopicSetBy(chan.to_string(), topic.usermask, topic.timestamp)))
+        }
         replies.push(Ok(ircReply::NameReply(chan.to_string(), self.get_nick_list())));
         replies.push(Ok(ircReply::EndofNames(chan.to_string())));
         Ok(replies)
@@ -195,6 +229,11 @@ impl Channel {
      * that in one place, both for User and Chan side - plus, mutex lock
      * everything for the entire fn call */
     pub async fn rm_user(&self, user: &User, msg: &str) -> Result<(), ChanError> {
+        /* Notify part msg */
+        if !self.is_empty() {
+            let _res = self.notify_part(user, &self.get_name(), msg).await;
+        }
+
         let retval = {
             let mut chan_mutex_lock = self.users.lock().unwrap();
             let mut user_mutex_lock = user.channel_list.lock().unwrap();
@@ -214,10 +253,6 @@ impl Channel {
             }
         }; /* de-scope Mutex */
 
-        /* Notify part msg */
-        if !self.is_empty() {
-            let _res = self.notify_part(user, &self.get_name(), msg).await;
-        }
         retval
     }
 
@@ -254,7 +289,8 @@ impl Channel {
             // we're forwarding messages, but this keeps us thread safe
             let users = self.gen_user_ptr_vec();
             for user in users.iter() {
-                if user.id != source.id {
+                // if you're parting or joining, your own echoed message confirms success
+                if user.id != source.id || command_str == "JOIN" || command_str == "PART" {
                     if let Err(err) = user.send_line(&line).await {
                         debug!("another tasks's client died: {}, note dead key {}", err, &user.get_nick());
                         //user.clear_chans_and_exit();

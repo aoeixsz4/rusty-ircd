@@ -45,6 +45,7 @@
 use std::fmt;
 use std::str;
 use crate::irc::rfc_defs as rfc;
+use crate::irc::chan::ChanTopic;
 
 pub enum Reply {
     None,
@@ -52,10 +53,13 @@ pub enum Reply {
     YourHost(String, String),
     Created(String),
     MyInfo(String, String, String, String),
+    NoTopic(String),
     Topic(String, String),
+    TopicSetBy(String, String, i64),
     NameReply(String, Vec<String>),
     EndofNames(String),
-    ListReply(String, String),
+    ListStart,
+    ListReply(String, usize, Option<ChanTopic>),
     EndofList,
 }
 
@@ -71,9 +75,12 @@ impl Reply {
             Reply::Created(_t) => 003,
             Reply::MyInfo(_s, _v, _um, _cm) => 004,
             Reply::None => 300,
-            Reply::ListReply(_ch, _top) => 322,
+            Reply::ListStart => 321,
+            Reply::ListReply(_ch, _nu, _top) => 322,
             Reply::EndofList => 323,
+            Reply::NoTopic(_ch) => 331,
             Reply::Topic(_ch, _top) => 332,
+            Reply::TopicSetBy(_ch, _umask, _stamp) => 333,
             Reply::NameReply(_ch, _ns) => 353,
             Reply::EndofNames(_ch) => 366
         }
@@ -92,9 +99,18 @@ impl Reply {
             Reply::YourHost(serv, ver) => Some(format!(":Your host is {}, running version {}", serv, ver)),
             Reply::Created(time) => Some(format!(":This server was created {}", time)),
             Reply::MyInfo(serv, ver, umodes, chanmodes) => Some(format!(":{} {} {} {}", serv, ver, umodes, chanmodes)),
-            Reply::ListReply(chan, topic) => Some(format!(":{} {}", chan, topic)),
+            Reply::ListStart => Some(format!("Channel Users :Topic")),
+            Reply::ListReply(chan, n_users, topic_opt) => {
+                if let Some(topic) = topic_opt {
+                    Some(format!("{} {} :{}", chan, n_users, topic.text))
+                } else {
+                    Some(format!("{} {}", chan, n_users))
+                }
+            },
             Reply::EndofList => Some(format!(":End of /LIST")),
+            Reply::NoTopic(chan) => Some(format!("{} :No topic is set.", chan)),
             Reply::Topic(chan, topic_msg) => Some(format!("{} :{}", chan, topic_msg)),
+            Reply::TopicSetBy(chan, usermask, timestamp) => Some(format!("{} {} {}", chan, usermask, timestamp)),
             Reply::NameReply(chan, nicks) => Some(format!("{} :{}", chan, nicks.join(" "))),
             Reply::EndofNames(chan) => Some(format!("{} :End of /NAMES list", chan)),
         }
@@ -169,9 +185,18 @@ impl fmt::Display for Reply {
             Reply::YourHost(serv, ver) => write!(f, "002 :Your host is {}, running version {}", serv, ver),
             Reply::Created(time) => write!(f, "003 :This server was created {}", time),
             Reply::MyInfo(serv, ver, umodes, chanmodes) => write!(f, "004 :{} {} {} {}", serv, ver, umodes, chanmodes),
-            Reply::ListReply(chan, topic) => write!(f, "322 :{} {}", chan, topic),
+            Reply::ListStart => write!(f, "321 Chan Users :Topic"),
+            Reply::ListReply(chan, n_users, topic_opt) => {
+                if let Some(topic) = topic_opt {
+                    write!(f, "322 {} {} :{}", chan, n_users, topic.text)
+                } else {
+                    write!(f, "322 {} {}", chan, n_users)
+                }
+            },
             Reply::EndofList => write!(f, "323 :End of /LIST"),
+            Reply::NoTopic(chan) => write!(f, "331 {} :No topic is set", chan),
             Reply::Topic(chan, topic_msg) => write!(f, "332 {} :{}", chan, topic_msg),
+            Reply::TopicSetBy(chan, usermask, timestamp) => write!(f, "333 {} {} {}", chan, usermask, timestamp),
             Reply::NameReply(chan, nicks) => write!(f, "353 {} :{}", chan, nicks.join(" ")),
             Reply::EndofNames(chan) => write!(f, "366 {} :End of /NAMES list", chan),
         }
