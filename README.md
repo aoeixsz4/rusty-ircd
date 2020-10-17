@@ -20,12 +20,12 @@ irc_proto (https://docs.rs/irc-proto/0.14.0/irc_proto/) appears to be a fairly
 complete implementation of IRCv3 (https://ircv3.net/irc/) which is based on the core RFCs (https://tools.ietf.org/html/rfc1459,
 https://tools.ietf.org/html/rfc2812 and https://tools.ietf.org/html/rfc7194).
 
-### release-0.3.0 (not yet begun)
+### release-0.3.0 (done)
 Targets for this release:
-* correct handling of errors (vetted with unit tests)
-* i18n support
-* SSL support
-* NICK/USER/PRIVMSG/NOTICE (already implemented, thorough functionality testing required)
+* correct handling of errors <-- made some progress on this but need to write test suites
+* i18n support <-- didn't do this yet
+* SSL support <-- works!
+* NICK/USER/PRIVMSG/NOTICE/JOIN/TOPIC/PART/LIST <-- these commands are so far implemented
 
 ### main << merge tokio-v0.2-port
 The ported code to tokio 0.2 compiles and runs so is now merged to main.
