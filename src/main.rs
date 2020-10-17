@@ -31,7 +31,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task;
 
-pub const RUSTY_IRCD_VERSION: &str = "0.2.3";
+pub const RUSTY_IRCD_VERSION: &str = "rusty-ircd-0.2.3";
+pub const USER_MODES: &str = "";
+pub const CHAN_MODES: &str = "+o";
 
 fn get_host(ip_addr: IpAddr) -> Result<Host, ioError> {
     match lookup_addr(&ip_addr) {

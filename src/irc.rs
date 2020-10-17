@@ -18,7 +18,7 @@ pub mod chan;
 pub mod error;
 pub mod reply;
 pub mod rfc_defs;
-use crate::RUSTY_IRCD_VERSION;
+use crate::{RUSTY_IRCD_VERSION, USER_MODES, CHAN_MODES};
 use crate::client;
 use crate::client::{Client, ClientType, ClientReply, ClientReplies, GenError, Host};
 use crate::irc::chan::{ChanFlags, Channel};
@@ -313,8 +313,8 @@ impl Core {
             hostname,
             version: String::from(RUSTY_IRCD_VERSION),
             date: Utc::now().to_rfc2822(),
-            user_modes: String::from(""),
-            chan_modes: String::from("")
+            user_modes: String::from(USER_MODES),
+            chan_modes: String::from(CHAN_MODES)
         })
     }
 
