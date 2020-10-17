@@ -14,7 +14,9 @@
 *  You should have received a copy of the GNU Lesser General Public License
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
+extern crate log;
 extern crate tokio;
+extern crate tokio_native_tls;
 use crate::io::{ReadHalfWrap, WriteHalfWrap};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
@@ -22,7 +24,6 @@ use crate::irc::reply as reply;
 use crate::irc::{self, Core, User, NamedEntity};
 use crate::parser::{parse_message, ParseError};
 use crate::irc::chan::ChanError;
-extern crate log;
 use std::error;
 use std::fmt;
 use std::io::Error as ioError;
@@ -32,6 +33,8 @@ use log::{debug, warn};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError as mpscSendErr;
+use tokio::task::JoinError as tokJoinErr;
+use tokio_native_tls::native_tls::Error as tntTlsErr;
 
 /* There are 3 main types of errors we can have here...
  * one is a parsing error, which should be covered by ParseError,
@@ -50,6 +53,8 @@ pub enum GenError {
     Chan(ChanError),
     DeadClient(Arc<User>),
     DeadUser(String),
+    TLS(tntTlsErr),
+    Tokio(tokJoinErr)
 }
 
 impl fmt::Display for GenError {
@@ -62,6 +67,8 @@ impl fmt::Display for GenError {
             GenError::Chan(ref err) => write!(f, "Channel Error: {}", err),
             GenError::DeadClient(user) => write!(f, "user {}, stale client", user.get_nick()),
             GenError::DeadUser(nick) => write!(f, "user {}, remant, scattered WeakRefs", nick),
+            GenError::TLS(ref err) => write!(f, "TLS Error: {}", err),
+            GenError::Tokio(ref err) => write!(f, "TLS Error: {}", err)
         }
     }
 }
@@ -80,6 +87,8 @@ impl error::Error for GenError {
             GenError::DeadClient(_user) => None,
             GenError::DeadUser(_nick) => None,
             GenError::Chan(ref err) => Some(err),
+            GenError::TLS(ref err) => Some(err),
+            GenError::Tokio(ref err) => Some(err)
         }
     }
 }
@@ -111,6 +120,18 @@ impl From<ircError> for GenError {
 impl From<mpscSendErr<String>> for GenError {
     fn from(err: mpscSendErr<String>) -> GenError {
         GenError::Mpsc(err)
+    }
+}
+
+impl From<tntTlsErr> for GenError {
+    fn from(err: tntTlsErr) -> GenError {
+        GenError::TLS(err)
+    }
+}
+
+impl From<tokJoinErr> for GenError {
+    fn from(err: tokJoinErr) -> GenError {
+        GenError::Tokio(err)
     }
 }
 
@@ -282,6 +303,8 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
                     warn!("received error {} trying to remove dead user {}", err, nick.to_string());
                 }
             },
+            Err(GenError::Tokio(err)) => return Err(GenError::Tokio(err)),
+            Err(GenError::TLS(err)) => return Err(GenError::TLS(err)),
             Ok(replies) => {
                 for result_t in replies {
                     match result_t {

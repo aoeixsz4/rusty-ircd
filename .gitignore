@@ -5,3 +5,6 @@
 /examples/echo.rs
 /commit
 /fuzz/logs
+legit-self-auth.crt
+identity.pfx
+rusty-aoei.key

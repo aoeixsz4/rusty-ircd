@@ -15,13 +15,14 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 extern crate tokio;
+extern crate tokio_native_tls;
 use core::pin::Pin;
 use core::result::Result;
 use core::task::{Context, Poll};
 use tokio::io::Error as tioError;
-use tokio::io::Result as tioResult;
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio_native_tls::TlsStream;
 
 /* implement AsyncRead/Write and AsyncRead/WriteExt on wrappers so that the
  * rest of our code need not care whether we're dealing with ClearText or
@@ -29,20 +30,21 @@ use tokio::net::TcpStream;
 #[derive(Debug)]
 pub enum ReadHalfWrap {
     ClearText(ReadHalf<TcpStream>),
-    /* add case here for Encrypted<TlsStream> */
+    Encrypted(ReadHalf<TlsStream<TcpStream>>)
 }
 
 #[derive(Debug)]
 pub enum WriteHalfWrap {
     ClearText(WriteHalf<TcpStream>),
-    /* add case here for Encrypted<TlsStream> */
+    Encrypted(WriteHalf<TlsStream<TcpStream>>)
 }
 
 impl AsyncRead for ReadHalfWrap {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context, buf: &mut [u8]) -> Poll<tioResult<usize>> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context, buf: &mut ReadBuf) -> Poll<Result<(), tioError>> {
         let wrapper = Pin::into_inner(self);
         match wrapper {
             ReadHalfWrap::ClearText(inner) => AsyncRead::poll_read(Pin::new(inner), cx, buf),
+            ReadHalfWrap::Encrypted(inner) => AsyncRead::poll_read(Pin::new(inner), cx, buf)
         }
     }
 }
@@ -56,6 +58,7 @@ impl AsyncWrite for WriteHalfWrap {
         let wrapper = Pin::into_inner(self);
         match wrapper {
             WriteHalfWrap::ClearText(inner) => AsyncWrite::poll_write(Pin::new(inner), cx, buf),
+            WriteHalfWrap::Encrypted(inner) => AsyncWrite::poll_write(Pin::new(inner), cx, buf)
         }
     }
 
@@ -63,6 +66,7 @@ impl AsyncWrite for WriteHalfWrap {
         let wrapper = Pin::into_inner(self);
         match wrapper {
             WriteHalfWrap::ClearText(inner) => AsyncWrite::poll_flush(Pin::new(inner), cx),
+            WriteHalfWrap::Encrypted(inner) => AsyncWrite::poll_flush(Pin::new(inner), cx)
         }
     }
 
@@ -70,6 +74,7 @@ impl AsyncWrite for WriteHalfWrap {
         let wrapper = Pin::into_inner(self);
         match wrapper {
             WriteHalfWrap::ClearText(inner) => AsyncWrite::poll_shutdown(Pin::new(inner), cx),
+            WriteHalfWrap::Encrypted(inner) => AsyncWrite::poll_shutdown(Pin::new(inner), cx)
         }
     }
 }
