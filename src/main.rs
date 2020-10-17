@@ -118,7 +118,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file = File::open("identity.pfx").unwrap();
     let mut identity = vec![];
     file.read_to_end(&mut identity).unwrap();
-    let identity = Identity::from_pkcs12(&identity, "aoeixsz4").unwrap();
+    let identity = Identity::from_pkcs12(&identity, "password").expect("failed to get identity, check password?");
 
     // start raw socket listeners
     let plain_listener = TcpListener::bind("127.0.1.1:6667").await?;
