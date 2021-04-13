@@ -45,10 +45,11 @@ Current target for that branch is:
 * IRC bots for integration testing
 
 ### Features
+* PING/PONG support (weechat clients will repeatedly reconnect, believing the connection to the server has died)
 * i18n support (FR from stenno)
-* channel support with JOIN/PART
+* ~~channel support with JOIN/PART <-- done
 * support for additional server nodes
-* SSL encrypted connectivity
+* ~~SSL encrypted connectivity <-- done
 
 Stay tuned folks!
 
