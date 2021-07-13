@@ -14,6 +14,14 @@
 *  You should have received a copy of the GNU Lesser General Public License
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::str::CharIndices;
+pub const MAX_HOSTNAME_SIZE: usize = 253;
+pub const MAX_SHORTNAME_SIZE: usize = 63;
+pub const MAX_CHANNAME_SIZE: usize = 50;
+pub const MAX_NICKNAME_SIZE: usize = 9;
+pub const CHANNELID_SIZE: usize = 5;
 pub const MAX_MSG_SIZE: usize = 512;
 pub const MAX_MSG_PARAMS: usize = 15; // including tailing, but not including COMMAND
 pub const LETTER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -29,6 +37,7 @@ pub const NOT_USER: &str = "\0\r\n @";
 pub const NOT_CHANSTRING: &str = "\0\r\n\x07, :";
 
 // this can probably be generalised a bit
+// this is really asking "is msg a subset of allowed"
 fn matches_allowed(msg: &str, allowed: &str) -> bool {
     for item in msg.chars() {
         if !allowed.contains(item) {
@@ -38,6 +47,7 @@ fn matches_allowed(msg: &str, allowed: &str) -> bool {
     true
 }
 
+// this is asking if msg contains any member of disallowed
 fn matches_disallowed(msg: &str, disallowed: &str) -> bool {
     for item in msg.chars() {
         if disallowed.contains(item) {
@@ -54,18 +64,9 @@ fn matches_disallowed(msg: &str, disallowed: &str) -> bool {
  * YES! there is, for the IRC proto! will work on that soon
  */
 pub fn valid_ipv4_addr(host_addr: &str) -> bool {
-    let toks: Vec<&str> = host_addr.split('.').collect();
-    if toks.len() == 4 {
-        // tokenizing 127...0 would give us empty string slices
-        // and we would consider that invalid
-        for item in toks.iter() {
-            if item.is_empty() || item.len() > 3 || !matches_allowed(item, DIGIT) {
-                return false;
-            }
-        }
-        true
-    } else {
-        false
+    match host_addr.parse::<Ipv4Addr>() {
+        Ok(_) => true,
+        Err(_) => false,
     }
 }
 
@@ -75,31 +76,9 @@ pub fn valid_ipv4_addr(host_addr: &str) -> bool {
 // so for example the ipv4 parts can be 352.437.999.325,
 // and we won't complain
 pub fn valid_ipv6_addr(host_addr: &str) -> bool {
-    let toks: Vec<&str> = host_addr.split(':').collect();
-    // ipv6 should have 8 tokens
-    if toks.len() == 8 {
-        for item in toks.iter() {
-            // no empty tokens please...
-            if item.is_empty() || !matches_allowed(item, HEXDIGIT) {
-                return false;
-            }
-        }
-        true
-    } else if toks.len() == 7 {
-        for (i, item) in toks.iter().enumerate() {
-            if item.is_empty() {
-                return false;
-            } else if i < 5 && &item[..] != "0" {
-                return false;
-            } else if i == 5 && !(&item[..] == "0" || &item[..] == "FFFF") {
-                return false;
-            } else if i == 6 && !valid_ipv4_addr(item) {
-                return false;
-            }
-        }
-        true
-    } else {
-        false
+    match host_addr.parse::<Ipv6Addr>() {
+        Ok(_) => true,
+        Err(_) => false,
     }
 }
 
@@ -108,7 +87,7 @@ pub fn valid_ipv6_addr(host_addr: &str) -> bool {
 // aug BNF = shortname *( "." shortname )
 pub fn valid_hostname(hostname: &str) -> bool {
     // rfc has an additional requirement that a hostname is max 63 chars
-    if hostname.is_empty() || hostname.len() > 63 {
+    if hostname.is_empty() || hostname.len() > MAX_HOSTNAME_SIZE {
         return false;
     }
 
@@ -130,18 +109,19 @@ pub fn valid_hostname(hostname: &str) -> bool {
 // but i think maybe it's supposed to mean "-" shouldn't be at the end OR start
 pub fn valid_shortname(shortname: &str) -> bool {
     // exception if first or last letter is "-"
-    if shortname.is_empty() {
+    if shortname.is_empty()
+        || shortname.len() > MAX_SHORTNAME_SIZE
+        || shortname.chars().nth(0).unwrap() == '-'
+        || shortname.chars().last().unwrap() == '-'
+    {
         return false;
     }
-    if &shortname[..1] != "-" && &shortname[..shortname.len() - 1] != "-" {
-        let mut allowed = String::new();
-        allowed.push_str(LETTER);
-        allowed.push_str(DIGIT);
-        allowed.push_str("-");
-        matches_allowed(shortname, &allowed)
-    } else {
-        false
-    }
+
+    let mut allowed = String::new();
+    allowed.push_str(LOWER);
+    allowed.push_str(DIGIT);
+    allowed.push_str("-");
+    matches_allowed(shortname, &allowed)
 }
 
 // first length check might be redundant, we shouldn't really be given zero-length slices
@@ -169,28 +149,32 @@ pub fn valid_user(username: &str) -> bool {
 // than what seems to be the standard '#channame' with a hash,
 // followed by an a-z string of some sort, that I've always seen
 // but hey ho, lets try and define it the rfc way
+// ! chans must have a 5-char 'channel ID' followed by a chanstring
 pub fn valid_channel(channame: &str) -> bool {
     // a channel name can be split into two chanstrings with exactly one ':'
     // but otherwise chanstrings cannot contain ':' but are otherwise
     // quite permissive
-    if channame.len() < 2 {
+    if channame.len() < 2 || channame.len() > MAX_CHANNAME_SIZE {
         return false;
     }
-    let (first_char, mut rest) = (channame.as_bytes()[0] as char, &channame[1..]);
+    let mut name_iter = channame.chars();
+    let first_char = name_iter.next().unwrap();
+    let mut chanstring: String = name_iter.collect();
     match first_char {
         '&' | '+' | '#' => (),
-        '!' if rest.len() > 5 => {
-            if !valid_channelid(&rest[..5]) {
+        '!' if chanstring.len() > 5 => {
+            let channelid: String = chanstring.chars().take(5).collect();
+            chanstring = chanstring.chars().skip(5).collect();
+            if !valid_channelid(&channelid) {
                 return false;
             }
-            rest = &rest[5..]; // in this case maybe easier to modify the rest slice
         }
         // any other first char is WRONG
         _ => return false,
     }
 
     // still need to check the chanstrings...
-    for item in rest.splitn(2, ':') {
+    for item in chanstring.splitn(2, ':') {
         if item.is_empty() || !valid_chanstring(item) {
             return false;
         }
@@ -202,14 +186,13 @@ pub fn valid_channel(channame: &str) -> bool {
 
 // rfc says this should be a 5-character string containing A-Z or digits
 pub fn valid_channelid(channelid: &str) -> bool {
-    if channelid.len() == 5 {
-        let mut allowed = String::new();
-        allowed.push_str(UPPER);
-        allowed.push_str(DIGIT);
-        matches_allowed(channelid, &allowed)
-    } else {
-        false
+    if channelid.len() != CHANNELID_SIZE {
+        return false;
     }
+    let mut allowed = String::new();
+    allowed.push_str(UPPER);
+    allowed.push_str(DIGIT);
+    matches_allowed(channelid, &allowed)
 }
 
 // very permissive, can be anything except NUL, BELL, CR, LF, ",", " ", ":"
@@ -220,25 +203,292 @@ pub fn valid_chanstring(chanstring: &str) -> bool {
 // rfc states nick should be max 9 in length,
 // pretty sure I've seen far longer nicks on most IRC servers though
 pub fn valid_nick(nick: &str) -> bool {
-    if nick.len() > 9 || nick.is_empty() {
+    if nick.len() > MAX_NICKNAME_SIZE || nick.is_empty() {
         return false;
     }
 
     let mut allowed = String::new();
     allowed.push_str(LETTER);
     allowed.push_str(SPECIAL);
+    let first: String = nick.chars().take(1).collect();
     // nick has different rules for the first char
-    if !matches_allowed(&nick[..1], &allowed) {
+    if !matches_allowed(&first, &allowed) {
         return false;
     }
 
-    if nick.len() == 1 {
-        // nothing else to check
+    // push_str the rest of the options
+    let rest: String = nick.chars().skip(1).collect();
+    if rest.is_empty() {
         return true;
     }
-
-    // push_str the rest of the options
     allowed.push_str(DIGIT);
     allowed.push_str("-");
-    matches_allowed(&nick[1..], &allowed)
+    matches_allowed(&rest, &allowed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_invert_set(char_set: &str) -> String {
+        let mut inverted_set = String::new();
+        for c in '\0'..(255 as char) {
+            if !char_set.contains(c) {
+                inverted_set.push(c);
+            }
+        }
+        inverted_set
+    }
+
+    #[test]
+    fn match_allowed_or_disallowed_sets() {
+        assert_eq!(matches_allowed("abc", "abcdef"), true);
+        assert_eq!(matches_allowed("abc", "abdef"), false);
+        assert_eq!(matches_disallowed("abc", "adef"), true);
+        assert_eq!(matches_disallowed("abc", "def"), false);
+    }
+
+    #[test]
+    fn hostname_cases() {
+        let mut max_short1 = String::new();
+        let mut max_short2 = String::new();
+        let mut max_short3 = String::new();
+        let mut max_short4 = String::new();
+        for _ in 0..MAX_SHORTNAME_SIZE {
+            max_short1.push('a');
+        }
+        for _ in 0..MAX_SHORTNAME_SIZE {
+            max_short2.push('b');
+        }
+        for _ in 0..MAX_SHORTNAME_SIZE {
+            max_short3.push('c');
+        }
+        for _ in 0..MAX_SHORTNAME_SIZE - 2 {
+            max_short4.push('d');
+        }
+        let max_len_hostname = format!(
+            "{}.{}.{}.{}",
+            max_short1, max_short2, max_short3, max_short4
+        );
+        max_short4.push('d');
+        let over_max_len_hostname = format!(
+            "{}.{}.{}.{}",
+            max_short1, max_short2, max_short3, max_short4
+        );
+        assert!(!valid_hostname(""), "an empty string cannot be a hostname");
+        assert!(
+            !valid_hostname(&over_max_len_hostname),
+            "hostname must be {} chars or less",
+            MAX_HOSTNAME_SIZE
+        );
+        assert!(
+            valid_hostname(&max_len_hostname),
+            "{}-char hostname is valid",
+            MAX_HOSTNAME_SIZE
+        );
+        assert!(
+            !valid_hostname("foo..bar"),
+            "hostname cannot contain two consecutive periods"
+        );
+        assert!(
+            !valid_hostname(".bar"),
+            "hostname cannot begin with a period"
+        );
+        assert!(
+            !valid_hostname("foo."),
+            "hostname cannot begin with a period"
+        );
+    }
+
+    #[test]
+    fn shortname_cases() {
+        let mut max_shortname = String::new();
+        for _ in 0..MAX_SHORTNAME_SIZE {
+            max_shortname.push('a');
+        }
+        let over_max_shortname = format!("{}{}", max_shortname, "1");
+        assert!(!valid_shortname("-asdf"), "shortname may not begin with -");
+        assert!(!valid_shortname("asdf-"), "shortname may not end with -");
+        assert!(
+            valid_shortname("as-df"),
+            "shortname may contain - in a non-terminal position"
+        );
+        assert!(
+            valid_shortname("1as7-df8"),
+            "shortname may contain digits in any position"
+        );
+        assert!(
+            valid_shortname(&max_shortname),
+            "shortname may contain up to {} chars",
+            MAX_SHORTNAME_SIZE
+        );
+        assert!(
+            !valid_shortname(&over_max_shortname),
+            "shortname may contain no more than {} chars",
+            MAX_SHORTNAME_SIZE
+        );
+        for invalid_char in make_invert_set(&format!("{}{}-", LOWER, DIGIT)).chars() {
+            assert!(
+                !valid_shortname(&format!("foo-{}bar", invalid_char)),
+                "shortname cannot contain {}",
+                invalid_char
+            );
+        }
+        assert!(
+            !valid_shortname("foo-🤔bar"),
+            "shortname may not contain emojis such as 🤔 or other UTF-8"
+        );
+    }
+
+    #[test]
+    fn command_cases() {
+        assert!(
+            valid_command("100"),
+            "3-digit number is valid command string"
+        );
+        assert!(
+            !valid_command("1000"),
+            "4-digit number is invalid command string"
+        );
+        assert!(
+            !valid_command("1000"),
+            "4-digit number is invalid command string"
+        );
+    }
+
+    #[test]
+    fn user_cases() {
+        assert!(
+            valid_user("\\kekF00rifk{}"),
+            "user string may contain all kinds of weird chars",
+        );
+        assert!(!valid_user(""), "user string may not be empty");
+        for invalid_char in NOT_USER.chars() {
+            assert!(
+                !valid_user(&format!("lol{}", invalid_char)),
+                "user string may not contain {}",
+                invalid_char
+            );
+        }
+        assert!(
+            valid_user("foo-🤔bar"),
+            "user string may contain emojis/other unicode"
+        );
+        for valid_char in make_invert_set(NOT_USER).chars() {
+            assert!(
+                valid_user(&format!("lol{}", valid_char)),
+                "user string may contain {}",
+                valid_char
+            );
+        }
+    }
+
+    #[test]
+    fn chan_string_cases() {
+        assert!(!valid_channel(""), "channel cannot be an empty string");
+        assert!(
+            !valid_channel("#"),
+            "channel cannot be fewer than 2 chars long"
+        );
+        assert!(
+            valid_channel("!123456"),
+            "! chan of may have 6 ore more digits after the"
+        );
+        assert!(
+            !valid_channel("!12345"),
+            "! chans must contain both channel ID (5 chars) and chanstring"
+        );
+        assert!(
+            valid_channel("!123ABabc"),
+            "! chans contain uppercase letters in the chan ID"
+        );
+        assert!(
+            !valid_channel("!123Ababc"),
+            "! chans may not contain lowercase letters in the chan ID"
+        );
+        for invalid_char in make_invert_set("&+#!").chars() {
+            assert!(
+                !valid_channel(&format!("{}ABC12abc", invalid_char)),
+                "{} may not be first char of channel name",
+                invalid_char
+            );
+        }
+        for invalid_char in make_invert_set(&format!("{}{}", UPPER, DIGIT)).chars() {
+            assert!(
+                !valid_channel(&format!("!{}", invalid_char)),
+                "! chans may not contain {}",
+                invalid_char
+            );
+        }
+        for invalid_char in NOT_CHANSTRING.chars() {
+            assert!(
+                !valid_channel(&format!("#{}", invalid_char)),
+                "[#+&] chans may not contain {}",
+                invalid_char
+            );
+        }
+        assert!(
+            valid_channel("#foobar"),
+            "#foobar is an allowed channel name"
+        );
+        assert!(
+            valid_channel("&foo:bar"),
+            "&foo:bar is an allowed channel name"
+        );
+        assert!(
+            !valid_channel("&foo:bar:baz"),
+            "channel may not contain two : separators"
+        );
+        assert!(
+            valid_channel("!123ABfoo:bar"),
+            "! channel may also contain a : separator for the chan strings"
+        );
+        assert!(
+            !valid_channel("&foo:"),
+            "channel may not contain an empty string after a : delimiter"
+        );
+        assert!(
+            !valid_channel("#fooooooooooooooooooooooooooooooooooooooooooooooooo"),
+            "channel name may not contain more than 50 chars"
+        );
+    }
+
+    #[test]
+    fn nick_cases() {
+        assert!(
+            !valid_nick("abcdefghij"),
+            "max nickname lengthis {}",
+            MAX_NICKNAME_SIZE
+        );
+        assert!(valid_nick("abcdefghi"), "a-z is allowed in nicks");
+        assert!(valid_nick("abcdefghi"), "a-z is allowed in nicks");
+        for invalid_char in make_invert_set(&format!("{}{}", LETTER, SPECIAL)).chars() {
+            assert!(
+                !valid_nick(&format!("{}ABCabc", invalid_char)),
+                "{} may not be first char of nick name",
+                invalid_char
+            );
+        }
+        for valid_char in format!("{}{}", LETTER, SPECIAL).chars() {
+            assert!(
+                valid_nick(&format!("{}ABCabc", valid_char)),
+                "{} may be first char of nick name",
+                valid_char
+            );
+        }
+        for invalid_char in make_invert_set(&format!("{}{}{}-", LETTER, SPECIAL, DIGIT)).chars() {
+            assert!(
+                !valid_nick(&format!("a{}abc", invalid_char)),
+                "{} may not be a non-first char of nick name",
+                invalid_char
+            );
+        }
+        for valid_char in format!("{}{}{}-", LETTER, SPECIAL, DIGIT).chars() {
+            assert!(
+                valid_nick(&format!("a{}abc", valid_char)),
+                "{} may be a non-first char of nick name",
+                valid_char
+            );
+        }
+    }
 }
