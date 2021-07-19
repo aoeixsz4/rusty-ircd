@@ -10,7 +10,7 @@ This software is licensed under the Mozilla Public License v2.0.
 ## Branches
 ### irc-proto-port (not yet begun)
 This may be worth implementing before error handling, given the irc-proto crate appears to include definitions of protocol errors.
-The irc_proto library (written by Aaron Weiss) was recommended by kerio (of Freenode IRC/#ascension.run fame). Thanks kerio!
+The irc_proto library (written by Aaron Weiss) was recommended by kerio (of Libera IRC/#ascension.run fame). Thanks kerio!
 Porting to use this library most likely means we can throw away parser.rs, forget re-implementing the RFC and focus simply on
 server features, i18n and encrypted connectivity. Fantastic. :D This will be a major target for rusty-ircd version 0.3.0.
 
