@@ -34,6 +34,7 @@ pub const HEXDIGIT: &str = "0123456789ABCDEF";
 // user can have any character which is not in the set CONTROL, or an '@'
 pub const CONTROL: &str = "\0\r\n :";
 pub const NOT_USER: &str = "\0\r\n @";
+pub const NOT_TAGVAL: &str = "\0\r\n ;";
 pub const NOT_CHANSTRING: &str = "\0\r\n\x07, :";
 
 // this can probably be generalised a bit
@@ -82,6 +83,31 @@ pub fn valid_ipv6_addr(host_addr: &str) -> bool {
     }
 }
 
+pub fn valid_key(tag_key: &str) -> bool {
+    let mut allowed = String::new();
+    allowed.push_str(LETTER);
+    allowed.push_str(DIGIT);
+    allowed.push_str("-");
+    if let Some((vendor, key)) = tag_key.split_once('/') {
+        if !valid_hostname(vendor) || !matches_allowed(key, &allowed) {
+            false
+        } else {
+            true
+        }
+    } else {
+        if !matches_allowed(tag_key, &allowed) {
+            false
+        } else {
+            true
+        }
+    }
+}
+
+pub fn valid_value(val: &str) -> bool {
+    !matches_disallowed(val, NOT_TAGVAL)
+}
+
+
 // valid hostname/shortname
 // hostname can have periods which separate shortnames
 // aug BNF = shortname *( "." shortname )
@@ -102,6 +128,12 @@ pub fn valid_hostname(hostname: &str) -> bool {
 
     // we did OK!!
     true
+}
+
+pub fn valid_host(host: &str) -> bool {
+    valid_ipv4_addr(host)
+        || valid_ipv4_addr(host)
+        || valid_hostname(host)
 }
 
 // aug BNF shortname = (letter/digit) *(letter/digit/"-") *(letter/digit)
@@ -127,7 +159,7 @@ pub fn valid_shortname(shortname: &str) -> bool {
 // first length check might be redundant, we shouldn't really be given zero-length slices
 // RFC defition: at least one a-zA-Z letter, OR 3 digits
 pub fn valid_command(cmd_string: &str) -> bool {
-    if cmd_string.is_empty() && matches_allowed(cmd_string, LETTER) {
+    if !cmd_string.is_empty() && matches_allowed(cmd_string, LETTER) {
         true
     } else {
         cmd_string.len() == 3 && matches_allowed(cmd_string, DIGIT)
@@ -354,6 +386,38 @@ mod tests {
             !valid_command("1000"),
             "4-digit number is invalid command string"
         );
+        assert!(
+            valid_command("asdf"),
+            "alphabetical is valid command"
+        );
+        assert!(
+            !valid_command("asd12"),
+            "can't mix letters and numbers"
+        );
+        assert!(
+            valid_command("abCD"),
+            "any case is fine"
+        );
+    }
+
+    #[test]
+    fn tagval_cases() {
+        assert!(
+            valid_value("foobar"),
+            "a word is valid",
+        );
+        assert!(
+            !valid_value("foo bar"),
+            "space is not allowed",
+        );
+        assert!(
+            !valid_value("foo;bar"),
+            "; is not allowed",
+        );
+        assert!(
+            valid_value("foo😁bar"),
+            "emoji is allowed",
+        );
     }
 
     #[test]
@@ -450,6 +514,25 @@ mod tests {
         assert!(
             !valid_channel("#fooooooooooooooooooooooooooooooooooooooooooooooooo"),
             "channel name may not contain more than 50 chars"
+        );
+    }
+    #[test]
+    fn key_cases() {
+        assert!(
+            !valid_key("asd{f"),
+            "key cannot contain { char",
+        );
+        assert!(
+            valid_key("asd/f"),
+            "key can contain /",
+        );
+        assert!(
+            !valid_key("asd../f"),
+            "key can contain / but must be valid host before",
+        );
+        assert!(
+            valid_key("asdf1234-"),
+            "key can be alphanumeric plus hyphen",
         );
     }
 
