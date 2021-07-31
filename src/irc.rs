@@ -18,6 +18,7 @@ pub mod chan;
 pub mod error;
 pub mod reply;
 pub mod rfc_defs;
+pub mod message;
 use crate::{USER_MODES, CHAN_MODES};
 use crate::client;
 use crate::client::{Client, ClientType, ClientReply, ClientReplies, GenError, Host};
