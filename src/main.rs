@@ -21,7 +21,6 @@ extern crate tokio_native_tls;
 pub mod irc;
 pub mod client;
 pub mod io;
-pub mod parser;
 use crate::client::{run_client_handler, run_write_task, Host, GenError};
 use crate::io::{ReadHalfWrap, WriteHalfWrap};
 use crate::irc::Core;

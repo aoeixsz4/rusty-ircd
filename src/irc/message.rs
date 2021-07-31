@@ -65,7 +65,6 @@ impl fmt::Display for ParseError {
     }
 }
 
-
 #[derive(Debug)]
 pub enum HostType {
     HostName(String),
@@ -123,26 +122,10 @@ impl FromStr for Prefix {
 }
 
 #[derive(Debug)]
-pub enum Command {
-    None,
-}
-
-impl FromStr for Command {
-    type Err = ParseError;
-
-    fn from_str(s: &str) -> Result<Command, Self::Err> {
-        if !rfc::valid_command(s) {
-            return Err(ParseError::InvalidCommand(s.to_string()));
-        }
-        Ok(Command::None)
-    }
-}
-
-#[derive(Debug)]
 pub struct Message {
     pub tags: Option<Tags>,
     pub prefix: Option<Prefix>,
-    pub command: Command,
+    pub command: String,
     pub parameters: Vec<String>,
 }
 
@@ -150,7 +133,7 @@ impl Message {
     pub fn new(
         tags: Option<HashMap<String, Option<String>>>,
         prefix: Option<Prefix>,
-        command: Command,
+        command: String,
         parameters: Vec<String>,
     ) -> Result<Message, ParseError> {
         Ok(Message {
@@ -235,7 +218,7 @@ impl FromStr for Message {
         } else {
             None
         };
-        let mut rest = string_iter.collect::<String>();
+        let rest = string_iter.collect::<String>();
         if rest.len() > rfc::MAX_MSG_SIZE {
             return Err(ParseError::MessageTooLong);
         }
@@ -245,7 +228,10 @@ impl FromStr for Message {
         } else {
             None
         };
-        let command = take_token(&mut string_iter).parse::<Command>()?;
+        let command = take_token(&mut string_iter);
+        if !rfc::valid_command(&command) {
+            return Err(ParseError::InvalidCommand(command));
+        }
         let parameters = parse_parameters(&mut string_iter);
 
         Ok(Message {
