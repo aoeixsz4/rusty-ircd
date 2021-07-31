@@ -26,7 +26,7 @@ use crate::irc::chan::{ChanFlags, Channel, ChanTopic};
 use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::rfc_defs as rfc;
-use crate::parser::ParsedMsg;
+use crate::irc::message::Message;
 extern crate log;
 extern crate chrono;
 use chrono::Utc;
@@ -568,9 +568,10 @@ pub enum MsgType {
     Notice,
 }
 
-pub async fn command(irc: &Arc<Core>, client: &Arc<Client>, params: ParsedMsg) -> Result<ClientReplies, GenError> {
+pub async fn command(irc: &Arc<Core>, client: &Arc<Client>, message: Message) -> Result<ClientReplies, GenError> {
     let registered = client.is_registered();
-    let cmd = params.command.to_ascii_uppercase();
+    let cmd = message.command.to_ascii_uppercase();
+    let params = message.parameters;
 
     match &cmd[..] {
         "NICK" => nick(irc, client, params).await,
@@ -582,7 +583,7 @@ pub async fn command(irc: &Arc<Core>, client: &Arc<Client>, params: ParsedMsg) -
         "TOPIC" if registered => topic(irc, &client.get_user(), params).await,
         "LIST" if registered => list(irc).await,
         "PART" | "JOIN" | "PRIVMSG" | "NOTICE" | "TOPIC" | "LIST" if !registered => gef!(ircError::NotRegistered),
-        _ => gef!(ircError::UnknownCommand(params.command.to_string())),
+        _ => gef!(ircError::UnknownCommand(cmd)),
     }
 }
 
@@ -596,15 +597,15 @@ pub async fn list(irc: &Core) -> Result<ClientReplies, GenError> {
     Ok(replies)
 }
 
-pub async fn topic(irc: &Core, user: &User, mut params: ParsedMsg) -> Result<ClientReplies, GenError> {
+pub async fn topic(irc: &Core, user: &User, mut params: Vec<String>) -> Result<ClientReplies, GenError> {
     let mut replies = Vec::new();
-    if params.opt_params.is_empty() {
+    if params.is_empty() {
         replies.push(Err(ircError::NeedMoreParams("TOPIC".to_string())));
         return Ok(replies);
     }
 
     /* are ya in the chan? */
-    let chanmask = params.opt_params.remove(0);
+    let chanmask = params.remove(0);
     let chan = irc.get_chan(&chanmask)?;
     if !chan.is_joined(&user.get_nick()) {
         replies.push(Err(ircError::NotOnChannel(chanmask)));
@@ -612,7 +613,7 @@ pub async fn topic(irc: &Core, user: &User, mut params: ParsedMsg) -> Result<Cli
     }
 
     /* just want to receive topic? */
-    if params.opt_params.is_empty() {
+    if params.is_empty() {
         if let Some(topic) = chan.get_topic() {
             replies.push(Ok(ircReply::Topic(chanmask.clone(), topic.text)));
             replies.push(Ok(ircReply::TopicSetBy(chanmask, topic.usermask, topic.timestamp)));
@@ -624,16 +625,16 @@ pub async fn topic(irc: &Core, user: &User, mut params: ParsedMsg) -> Result<Cli
     
     /* set topic IF permissions allow */
     if chan.is_op(user) {
-        chan.set_topic(&params.opt_params.remove(0), &user);
+        chan.set_topic(&params.remove(0), &user);
     } else {
         replies.push(Err(ircError::ChanOPrivsNeeded(chanmask)));
     }
     Ok(replies)
 }
 
-pub async fn join(irc: &Arc<Core>, user: &Arc<User>, mut params: ParsedMsg) -> Result<ClientReplies, GenError> {
+pub async fn join(irc: &Arc<Core>, user: &Arc<User>, mut params: Vec<String>) -> Result<ClientReplies, GenError> {
     let mut replies = Vec::new();
-    if params.opt_params.is_empty() {
+    if params.is_empty() {
         replies.push(Err(ircError::NeedMoreParams("JOIN".to_string())));
         return Ok(replies);
     }
@@ -641,25 +642,25 @@ pub async fn join(irc: &Arc<Core>, user: &Arc<User>, mut params: ParsedMsg) -> R
     /* JOIN can take a second argument. The format is:
      * JOIN comma,sep.,chan,list comma,sep.,key,list
      * but I'll leave key implementation til later */
-    let targets = params.opt_params.remove(0);
+    let targets = params.remove(0);
     for target in targets.split(',') {
         replies.append(&mut irc.join_chan(&target, user).await?);
     }
     Ok(replies)
 }
 
-pub async fn part(irc: &Arc<Core>, user: &Arc<User>, mut params: ParsedMsg) -> Result<ClientReplies, GenError> {
+pub async fn part(irc: &Arc<Core>, user: &Arc<User>, mut params: Vec<String>) -> Result<ClientReplies, GenError> {
     let mut replies: ClientReplies = Vec::new();
-    if params.opt_params.is_empty() {
+    if params.is_empty() {
         replies.push(Err(ircError::NeedMoreParams("PART".to_string())));
         return Ok(replies);
     }
 
-    let targets = params.opt_params.remove(0);
-    let part_msg = if params.opt_params.is_empty() {
+    let targets = params.remove(0);
+    let part_msg = if params.is_empty() {
         String::from("")
     } else {
-        params.opt_params.remove(0)
+        params.remove(0)
     };
     for target in targets.split(',') {
         replies.push(irc.part_chan(&target, user, &part_msg).await);
@@ -670,11 +671,11 @@ pub async fn part(irc: &Arc<Core>, user: &Arc<User>, mut params: ParsedMsg) -> R
 pub async fn msg(
     irc: &Core,
     send_u: &Arc<User>,
-    mut params: ParsedMsg,
+    mut params: Vec<String>,
     notice: bool,
 ) -> Result<ClientReplies, GenError> {
     let mut replies = Vec::new();
-    if params.opt_params.is_empty() {
+    if params.is_empty() {
         if !notice {
                 replies.push(Err(ircError::NoRecipient("PRIVMSG".to_string())));
         }
@@ -683,11 +684,11 @@ pub async fn msg(
     /* this appears to be what's crashing, despite the check for params.opt_params.is_empty() beforehand
      * ah, I'd forgotten to remove one of the notice bools from the above if statements,
      * if params.opt_params.is_empty() && notice won't work */
-    let targets = params.opt_params.remove(0); 
+    let targets = params.remove(0); 
     let cmd = if notice { "NOTICE" } else { "PRIVMSG" };
 
     // if there were no more args, message should be an empty String
-    if params.opt_params.is_empty() {
+    if params.is_empty() {
         if !notice {
             replies.push(Err(ircError::NoTextToSend));
         }
@@ -695,7 +696,7 @@ pub async fn msg(
     }
     // if there are more than two arguments,
     // concatenate the remainder to one string
-    let message = params.opt_params.join(" ");
+    let message = params.join(" ");
     trace!("{} from user {} to {}, content: {}", cmd, send_u.get_nick(), targets, message);
 
     // loop over targets
@@ -724,18 +725,17 @@ pub async fn msg(
     Ok(replies)
 }
 
-pub async fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<ClientReplies, GenError> {
+pub async fn user(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Result<ClientReplies, GenError> {
     // a USER command should have exactly four parameters
     // <username> <hostname> <servername> <realname>,
     // though we ignore the middle two unless a server is
     // forwarding the message
     let mut replies = Vec::new();
-    let args = params.opt_params;
-    if args.len() != 4 {
+    if params.len() != 4 {
         return gef!(ircError::NeedMoreParams("USER".to_string()));
     }
-    let username = args[0].clone();
-    let real_name = args[3].clone();
+    let username = params[0].clone();
+    let real_name = params[3].clone();
 
     let result = match client.get_client_type() {
         ClientType::Dead => None,
@@ -782,10 +782,10 @@ pub async fn user(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result
     Ok(replies)
 }
 
-pub async fn nick(irc: &Core, client: &Arc<Client>, params: ParsedMsg) -> Result<ClientReplies, GenError> {
+pub async fn nick(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Result<ClientReplies, GenError> {
     let mut replies = Vec::new();
     let nick;
-    if let Some(n) = params.opt_params.iter().next() {
+    if let Some(n) = params.iter().next() {
         nick = n.to_string();
     } else {
         replies.push(Err(ircError::NeedMoreParams("NICK".to_string())));

@@ -15,14 +15,19 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 use std::{error, fmt};
-use crate::parser::ParseError;
+use crate::irc::message::ParseError;
 
 impl From<ParseError> for Error {
     fn from(err: ParseError) -> Error {
         match err {
+            ParseError::TagsTooLong => Error::TagsTooLong,
+            ParseError::MessageTooLong => Error::MessageTooLong,
+            ParseError::InvalidKey(key) => Error::InvalidKey(key),
+            ParseError::InvalidValue(value) => Error::InvalidValue(value),
             ParseError::InvalidCommand(cmd) => Error::InvalidCommand(cmd),
             ParseError::InvalidHost(host) => Error::InvalidHost(host),
             ParseError::InvalidNick(nick) => Error::ErroneusNickname(nick),
+            ParseError::InvalidNickOrHost(nick) => Error::InvalidNickOrHost(nick),
             ParseError::InvalidUser(user) => Error::InvalidUser(user),
             ParseError::NoCommand => Error::NoCommandGiven,
             ParseError::EmptyMessage => Error::EmptyMessage,
@@ -55,7 +60,12 @@ impl fmt::Display for Error {
             Error::InvalidHost(host) => write!(f, "601 {} :Parser: invalid host", host),
             Error::InvalidUser(user) => write!(f, "602 {} :Parser: invalid user", user),
             Error::NoCommandGiven => write!(f, "603 :Parser: no command given"),
+            Error::InvalidKey(key) => write!(f, "601 {} :Parser: invalid key", key),
+            Error::InvalidValue(value) => write!(f, "601 {} :Parser: invalid value", value),
+            Error::InvalidNickOrHost(name) => write!(f, "601 {} :Parser: invalid nick/host name", name),
             Error::EmptyMessage => write!(f, "604 :Parser: empty message"),
+            Error::MessageTooLong => write!(f, "604 :Parser: empty message"),
+            Error::TagsTooLong => write!(f, "604 :Parser: empty message"),
             Error::EmptyName => write!(f, "605 :Parser: empty message"),
             Error::EmptyNick => write!(f, "606 :Parser: empty message"),
             Error::EmptyUser => write!(f, "607 :Parser: empty message"),
@@ -111,7 +121,12 @@ pub enum Error {
     //    UModeUnknownFlag(    NumReply, &'static str),
     //    UsersDontMatch(      NumReply, &'static str),
     //BadChanMask(String)
+    TagsTooLong,
+    MessageTooLong,
+    InvalidKey(String),
+    InvalidValue(String),
     InvalidCommand(String),
+    InvalidNickOrHost(String),
     InvalidHost(String),
     InvalidUser(String),
     NoCommandGiven,

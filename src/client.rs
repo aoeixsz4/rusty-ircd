@@ -22,8 +22,8 @@ use crate::irc::error::Error as ircError;
 use crate::irc::reply::Reply as ircReply;
 use crate::irc::reply as reply;
 use crate::irc::{self, Core, User, NamedEntity};
-use crate::parser::{parse_message, ParseError};
 use crate::irc::chan::ChanError;
+use crate::irc::message::{Message, ParseError};
 use std::error;
 use std::fmt;
 use std::io::Error as ioError;
@@ -322,7 +322,7 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
  * and let's the caller process_lines() catch any errors, relaying parser or
  * IRC errors back to the client, or dropping the client on I/O error */
 async fn error_wrapper (client: &Arc<Client>, irc: &Arc<Core>, line: &str) -> Result<ClientReplies, GenError> {
-    let parsed = parse_message(line)?;
+    let parsed = line.parse::<Message>()?;
     irc::command(irc, client, parsed).await
 }
 
