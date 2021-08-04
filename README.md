@@ -54,4 +54,5 @@ Current target for that branch is:
 Stay tuned folks!
 
 -- aoei/Joanna
-openssl pkcs12 -export -out identity.pfx -inkey rusty-aoei.key -in legit-self-auth.crt
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365
+openssl pkcs12 -export -out identity.pfx -inkey key.pem -in cert.pem

@@ -20,21 +20,8 @@ use crate::irc::message::ParseError;
 impl From<ParseError> for Error {
     fn from(err: ParseError) -> Error {
         match err {
-            ParseError::TagsTooLong => Error::TagsTooLong,
-            ParseError::MessageTooLong => Error::MessageTooLong,
-            ParseError::InvalidKey(key) => Error::InvalidKey(key),
-            ParseError::InvalidValue(value) => Error::InvalidValue(value),
-            ParseError::InvalidCommand(cmd) => Error::InvalidCommand(cmd),
-            ParseError::InvalidHost(host) => Error::InvalidHost(host),
             ParseError::InvalidNick(nick) => Error::ErroneusNickname(nick),
-            ParseError::InvalidNickOrHost(nick) => Error::InvalidNickOrHost(nick),
-            ParseError::InvalidUser(user) => Error::InvalidUser(user),
-            ParseError::NoCommand => Error::NoCommandGiven,
-            ParseError::EmptyMessage => Error::EmptyMessage,
-            ParseError::EmptyName => Error::EmptyName,
-            ParseError::EmptyNick => Error::EmptyNick,
-            ParseError::EmptyUser => Error::EmptyUser,
-            ParseError::EmptyHost => Error::EmptyHost,
+            _ => Error::UnknownError,
         }
     }
 }
@@ -43,6 +30,7 @@ impl error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Error::UnknownError => write!(f, "400 :Unknown Error"),
             Error::NoSuchNick(nick) => write!(f, "401 {} :No such nick/channel", nick),
             Error::NoSuchChannel(chan) => write!(f, "403 {} :No such channel", chan),
             Error::CannotSendToChan(chan) => write!(f, "404 {} :Cannot send to channel", chan),
@@ -56,26 +44,13 @@ impl fmt::Display for Error {
             Error::NeedMoreParams(cmd) => write!(f, "461 {} :Not enough parameters", cmd),
             Error::AlreadyRegistred => write!(f, "462 :You may not reregister"),
             Error::ChanOPrivsNeeded(chan) => write!(f, "482 {} :You're not channel operator", chan),
-            Error::InvalidCommand(cmd) => write!(f, "600 {} :Parser: invalid command", cmd),
-            Error::InvalidHost(host) => write!(f, "601 {} :Parser: invalid host", host),
-            Error::InvalidUser(user) => write!(f, "602 {} :Parser: invalid user", user),
-            Error::NoCommandGiven => write!(f, "603 :Parser: no command given"),
-            Error::InvalidKey(key) => write!(f, "601 {} :Parser: invalid key", key),
-            Error::InvalidValue(value) => write!(f, "601 {} :Parser: invalid value", value),
-            Error::InvalidNickOrHost(name) => write!(f, "601 {} :Parser: invalid nick/host name", name),
-            Error::EmptyMessage => write!(f, "604 :Parser: empty message"),
-            Error::MessageTooLong => write!(f, "604 :Parser: empty message"),
-            Error::TagsTooLong => write!(f, "604 :Parser: empty message"),
-            Error::EmptyName => write!(f, "605 :Parser: empty message"),
-            Error::EmptyNick => write!(f, "606 :Parser: empty message"),
-            Error::EmptyUser => write!(f, "607 :Parser: empty message"),
-            Error::EmptyHost => write!(f, "608 :Parser: empty message"),
         }
     }
 }
 
 #[derive(Debug)]
 pub enum Error {
+    UnknownError,
     NoSuchNick(String),
     //    NoSuchServer(        NumReply, &'static str),
     NoSuchChannel(String),
@@ -121,20 +96,6 @@ pub enum Error {
     //    UModeUnknownFlag(    NumReply, &'static str),
     //    UsersDontMatch(      NumReply, &'static str),
     //BadChanMask(String)
-    TagsTooLong,
-    MessageTooLong,
-    InvalidKey(String),
-    InvalidValue(String),
-    InvalidCommand(String),
-    InvalidNickOrHost(String),
-    InvalidHost(String),
-    InvalidUser(String),
-    NoCommandGiven,
-    EmptyMessage,
-    EmptyName,
-    EmptyNick,
-    EmptyUser,
-    EmptyHost,
 }
 
 //pub const ERR_NOSUCHNICK: Error = Error::NoSuchNick(401, "<nickname> :No such nick/channel");
