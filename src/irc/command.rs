@@ -14,35 +14,39 @@
 *  You should have received a copy of the GNU Lesser General Public License
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
+use crate::irc::error::Error as ircError;
 use crate::irc::message::ParseError;
 use crate::irc::rfc_defs as rfc;
 use std::str::FromStr;
 
 #[derive(Debug)]
 pub enum Command {
-    None,
+    Nick,
+    User,
+    Privmsg,
+    Notice,
+    Join,
+    Part,
+    Topic,
+    List,
 }
 
 impl FromStr for Command {
-    type Err = ParseError;
+    type Err = ircError;
 
     fn from_str(s: &str) -> Result<Command, Self::Err> {
-        if !rfc::valid_command(s) {
-            return Err(ParseError::InvalidCommand(s.to_string()));
-        }
         let upper = s.to_ascii_uppercase();
-        match &upper {
-            "NICK" => Command::Nick,
-            "USER" => Command::User,
-            "PRIVMSG" => Command::Privmsg,
-            "NOTICE" => Command::Notice,
-            "JOIN" => Command::Join,
-            "PART" => Command::Part,
-            "TOPIC" => Command::Topic,
-            "LIST" => Command::List,
-            _ => Err(ParseError::UnknownCommand(s)),
+        match upper.as_str() {
+            "NICK" => Ok(Command::Nick),
+            "USER" => Ok(Command::User),
+            "PRIVMSG" => Ok(Command::Privmsg),
+            "NOTICE" => Ok(Command::Notice),
+            "JOIN" => Ok(Command::Join),
+            "PART" => Ok(Command::Part),
+            "TOPIC" => Ok(Command::Topic),
+            "LIST" => Ok(Command::List),
+            _ => Err(ircError::UnknownCommand(s.to_string())),
         }
-        Ok(Command::None)
     }
 }
 
