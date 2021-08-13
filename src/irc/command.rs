@@ -15,8 +15,6 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 use crate::irc::error::Error as ircError;
-use crate::irc::message::ParseError;
-use crate::irc::rfc_defs as rfc;
 use std::str::FromStr;
 
 #[derive(Debug)]
