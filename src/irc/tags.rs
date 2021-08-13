@@ -1,8 +1,47 @@
 use core::iter::Iterator;
-use std::{collections::HashMap, str::Chars};
+use std::collections::HashMap;
+use std::collections::hash_map::Iter;
+use std::str::Chars;
 use crate::irc::rfc_defs as rfc;
 
 pub type Tags = HashMap<String, String>;
+
+struct Escaper<'a> {
+    inner_iter: Chars<'a>,
+    insert: Option<char>,
+}
+
+impl Iterator for Escaper<'_> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(saved) = self.insert {
+            self.insert = None;
+            return Some(saved);
+        }
+        if let Some(next) = self.inner_iter.next() {
+            match next {
+                ' ' => self.insert = Some('s'),
+                '\r' => self.insert = Some('r'),
+                '\n' => self.insert = Some('n'),
+                ';' => self.insert = Some(':'),
+                '\\' => self.insert = Some('\\'),
+                _ => return Some(next),
+            }
+            return Some('\\');
+        }
+        None
+    }
+}
+
+impl<'a> Escaper<'a> {
+    fn from_str(s: &'a str) -> Self {
+        Escaper {
+            inner_iter: s.chars(),
+            insert: None,
+        }
+    }
+}
 
 struct Unescaper<'a> {
     inner_iter: Chars<'a>,
@@ -43,6 +82,11 @@ fn copy_and_unescape_value (value: &str) -> String {
     iter.filter_map(|x| Some(x)).collect::<String>()
 }
 
+fn copy_and_escape_value (value: &str) -> String {
+    let iter = Escaper::from_str(value);
+    iter.filter_map(|x| Some(x)).collect::<String>()
+}
+
 pub fn parse_tags (tag_string: &str) -> Tags {
     let mut tags = HashMap::new();
     for s in tag_string.split(';') {
@@ -59,6 +103,33 @@ pub fn parse_tags (tag_string: &str) -> Tags {
     return tags;
 }
 
+fn recurse (mut i: Iter<String, String>, s: &mut String) {
+    match i.next() {
+        None => (),
+        Some((k, v)) => {
+            s.push_str(";");
+            s.push_str(k);
+            if v.len() > 0 {
+                s.push_str("=");
+                s.push_str(&copy_and_escape_value(v));
+            }
+        },
+    }
+}
+
+pub fn assemble_tags (tags: Tags) -> String {
+    let mut out = String::new();
+    let mut iter = tags.iter();
+    if let Some((k, v)) = iter.next() {
+        out.push_str(k);
+        if v.len() > 0 {
+            out.push_str("=");
+            out.push_str(&copy_and_escape_value(v));
+        }
+    }
+    recurse(iter, &mut out);
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -106,5 +177,38 @@ mod tests {
         let tags = parse_tags("foo=bar;foo=baz");
         assert_eq!(tags.contains_key("foo"), true, "foo key is saved (twice)");
         assert_eq!(tags.get("foo").unwrap(), "baz", "`foo` key contains the last value in the tag string");
+    }
+ 
+    #[test]
+    fn test_assembly() {
+        let tags = parse_tags("foo=bar;asdf=baz");
+        let assembled = assemble_tags(tags);
+        assert_eq!(
+            assembled == "foo=bar;asdf=baz"
+            || assembled == "asdf=baz;foo=bar", true,
+            "string `foo=bar;asdf=baz` is reproduced (possibly in another order)"
+        );
+    }
+ 
+    #[test]
+    fn test_assembly_empty_key() {
+        let tags = parse_tags("foo=;asdf=baz");
+        let assembled = assemble_tags(tags);
+        assert_eq!(
+            assembled == "foo;asdf=baz"
+            || assembled == "asdf=baz;foo", true,
+            "string `foo=;asdf=baz` is reproduced (in some order) with foo's `=` dropped"
+        );
+    }
+ 
+    #[test]
+    fn test_assembly_escape() {
+        let tags = parse_tags("foo=;asdf=baz\\n");
+        let assembled = assemble_tags(tags);
+        assert_eq!(
+            assembled == "foo;asdf=baz\\n"
+            || assembled == "asdf=baz\\n;foo", true,
+            "string `foo=;asdf=baz\\n` is reproduced (in some order) with escaped \\n, got {}", assembled
+        );
     }
 }
