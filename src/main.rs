@@ -50,9 +50,6 @@ fn get_host(ip_addr: IpAddr) -> Result<Host, ioError> {
 
 async fn plaintext_socket(sock: TcpStream, irc: Arc<Core>) -> Result<(), GenError> {
     let id = irc.assign_id();
-    /* Two ? required, one expects a potential JoinError, the second ?
-     * decomposes to give Host or an ioError - may need some additional error
-     * composition to deal with the possible JoinError... */
     let ip_address = sock.peer_addr()?.ip();
     let host = task::spawn_blocking(move || get_host(ip_address)).await??;
     let (tx, rx) = mpsc::channel(32);
@@ -77,9 +74,6 @@ async fn plain_listen(server: TcpListener, irc_core: Arc<Core>) -> Result<(), Ge
 
 async fn process_socket(sock: TcpStream, irc: Arc<Core>, acceptor: Arc<TlsAcceptor>) -> Result<(), GenError> {
     let id = irc.assign_id();
-    /* Two ? required, one expects a potential JoinError, the second ?
-     * decomposes to give Host or an ioError - may need some additional error
-     * composition to deal with the possible JoinError... */
     let ip_address = sock.peer_addr()?.ip();
     let host = task::spawn_blocking(move || get_host(ip_address)).await??;
     let (tx, rx) = mpsc::channel(32);
@@ -101,7 +95,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
     env_logger::init();
 
-    // is this even necessary?
     let server_host = if let Ok(ip) = "127.0.1.1".parse::<IpAddr>() {
         if let Host::Hostname(h) = task::spawn_blocking(move ||get_host(ip)).await?? {
             h
@@ -113,23 +106,18 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let irc_core = Core::new(server_host, version);
 
-    // encryption key stuff
     let mut file = File::open("identity.pfx").unwrap();
     let mut identity = vec![];
     file.read_to_end(&mut identity).unwrap();
     let identity = Identity::from_pkcs12(&identity, "password").expect("failed to get identity, check password?");
 
-    // start raw socket listeners
     let plain_listener = TcpListener::bind("127.0.1.1:6667").await?;
     let listener = TcpListener::bind("127.0.1.1:6697").await?;
     
-    // spawn routine to deal with plaintext clients
     tokio::spawn(plain_listen(plain_listener, Arc::clone(&irc_core)));
 
-    // first create the non-async TlsAcceptor
     let acceptor = NativeTlsAcc::new(identity).unwrap();
 
-    // this creates the tokio wrapper
     let acceptor = Arc::new(TlsAcceptor::from(acceptor));
     loop {
         let (socket, _) = listener.accept().await?;
