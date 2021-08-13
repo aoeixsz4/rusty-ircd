@@ -18,11 +18,9 @@ extern crate log;
 extern crate tokio;
 extern crate tokio_native_tls;
 use crate::io::{ReadHalfWrap, WriteHalfWrap};
-use crate::irc::error::Error as ircError;
-use crate::irc::reply::Reply as ircReply;
-use crate::irc::reply as reply;
 use crate::irc::{self, Core, User, NamedEntity};
-use crate::irc::chan::ChanError;
+//use crate::irc::_chan::ChanError;
+use crate::irc::err_defs as err;
 use crate::irc::message::Message;
 use std::error;
 use std::fmt;
@@ -47,9 +45,8 @@ use tokio_native_tls::native_tls::Error as tntTlsErr;
 #[derive(Debug)]
 pub enum GenError {
     Io(ioError),
-    IRC(ircError),
     Mpsc(mpscSendErr<String>),
-    Chan(ChanError),
+    //Chan(ChanError),
     DeadClient(Arc<User>),
     DeadUser(String),
     TLS(tntTlsErr),
@@ -60,9 +57,8 @@ impl fmt::Display for GenError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             GenError::Io(ref err) => write!(f, "IO Error: {}", err),
-            GenError::IRC(ref err) => write!(f, "IRC Error: {}", err),
             GenError::Mpsc(ref err) => write!(f, "MPSC Send Error: {}", err),
-            GenError::Chan(ref err) => write!(f, "Channel Error: {}", err),
+            //GenError::Chan(ref err) => write!(f, "Channel Error: {}", err),
             GenError::DeadClient(user) => write!(f, "user {}, stale client", user.get_nick()),
             GenError::DeadUser(nick) => write!(f, "user {}, remant, scattered WeakRefs", nick),
             GenError::TLS(ref err) => write!(f, "TLS Error: {}", err),
@@ -79,11 +75,10 @@ impl error::Error for GenError {
             // to a trait object `&Error`. This works because both error types
             // implement `Error`.
             GenError::Io(ref err) => Some(err),
-            GenError::IRC(ref err) => Some(err),
             GenError::Mpsc(ref err) => Some(err),
             GenError::DeadClient(_user) => None,
             GenError::DeadUser(_nick) => None,
-            GenError::Chan(ref err) => Some(err),
+            //GenError::Chan(ref err) => Some(err),
             GenError::TLS(ref err) => Some(err),
             GenError::Tokio(ref err) => Some(err)
         }
@@ -96,17 +91,11 @@ impl From<ioError> for GenError {
     }
 }
 
-impl From<ChanError> for GenError {
+/*impl From<ChanError> for GenError {
     fn from(err: ChanError) -> GenError {
         GenError::Chan(err)
     }
-}
-
-impl From<ircError> for GenError {
-    fn from(err: ircError) -> GenError {
-        GenError::IRC(err)
-    }
-}
+}*/
 
 impl From<mpscSendErr<String>> for GenError {
     fn from(err: mpscSendErr<String>) -> GenError {
@@ -164,8 +153,6 @@ impl Clone for ClientType {
 }
 
 type MsgRecvr = mpsc::Receiver<String>;
-pub type ClientReply = Result<ircReply, ircError>;
-pub type ClientReplies = Vec<ClientReply>;
 
 pub async fn run_write_task(sock: WriteHalfWrap, mut rx: MsgRecvr) -> Result<(), ioError> {
     /* apparently we can't have ? after await on any of these
@@ -282,25 +269,21 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
     while let Some(line) = handler.stream.next_line().await? {
         if line.is_empty() { continue }
         match error_wrapper(&handler.client, irc, &line).await {
-            Err(GenError::IRC(err)) => handler.client.send_err(err).await?,
-            Err(GenError::Chan(_err)) => (), /* non-fatal, will figure out how to handle later */
+            //Err(GenError::Chan(_err)) => (), /* non-fatal, will figure out how to handle later */
             Err(GenError::Io(err)) => return Err(GenError::Io(err)),
             Err(GenError::Mpsc(err)) => return Err(GenError::Mpsc(err)),
             Err(GenError::DeadClient(user)) => attempt_cleanup(irc, user),
             Err(GenError::DeadUser(nick)) => {
-                let _res = irc.search_user_chans_purge(&nick);
-                if let Err(err) = irc.remove_name(&nick) {
-                    warn!("received error {} trying to remove dead user {}", err, nick.to_string());
-                }
+                /*let _res = irc.search_user_chans_purge(&nick);
+                if let Some(name) = irc.remove_name(&nick) {
+                    warn!("trying to remove dead user {}, but doesn't exist",  nick.to_string());
+                }*/
             },
             Err(GenError::Tokio(err)) => return Err(GenError::Tokio(err)),
             Err(GenError::TLS(err)) => return Err(GenError::TLS(err)),
             Ok(replies) => {
-                for result_t in replies {
-                    match result_t {
-                        Ok(reply) => handler.client.send_rpl(reply).await?,
-                        Err(err) => handler.client.send_err(err).await?
-                    }
+                for message in replies {
+                    handler.client.send(message).await?
                 }
             },
         }
@@ -311,9 +294,12 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
 /* wrapping these two fn calls in this function allows easy error composition,
  * and let's the caller process_lines() catch any errors, relaying parser or
  * IRC errors back to the client, or dropping the client on I/O error */
-async fn error_wrapper (client: &Arc<Client>, irc: &Arc<Core>, line: &str) -> Result<ClientReplies, GenError> {
-    let parsed = line.parse::<Message>()?;
-    irc::command(irc, client, parsed).await
+async fn error_wrapper (client: &Arc<Client>, irc: &Arc<Core>, line: &str) -> Result<Vec<Message>, GenError> {
+    if let Ok(parsed) = line.parse::<Message>() {
+        irc::command(irc, client, parsed).await
+    } else {
+        Ok(vec![irc.gen_reply(err::ERR_UNKNOWNERROR, vec![])])
+    }
 }
 
 /* found a stale user with no client */
@@ -336,18 +322,18 @@ pub fn attempt_cleanup(irc: &Core, user: Arc<User>) {
         
     /* irc Core namespace HashMap */
     let nick = user.get_nick();
-    if let Ok(NamedEntity::User(_user_weak)) = irc.remove_name(&nick) {
+    if let Some(NamedEntity::User(_user_weak)) = irc.remove_name(&nick) {
         debug!("remove user ptr of {} from IRC namespace hashmap", nick);
     } else {
         debug!("user ptr for {} has already been removed from IRC namespace/hash table", nick);
     }
 
     /* search for remaining references in channel lists */
-    let found = irc.search_user_chans_purge(&nick);
-    debug!("removed user {} from these channels: {}", nick, found.join(" "));
+    //let found = irc.search_user_chans_purge(&nick);
+    //debug!("removed user {} from these channels: {}", nick, found.join(" "));
 
     /* also make sure the user's channel hashmap is also clear */
-    user.clear_up();
+    //user.clear_up();
 
     /*for chan in chans.iter() {
      *   chan.notify_quit(&user, "vanishes in a cloud of rusty iron shavings").await;
@@ -457,30 +443,11 @@ impl Client {
         &self.irc
     }
 
-    pub async fn send_err(&self, err: ircError) -> Result<(), GenError> {
-        let line = format!(":{} {}", self.irc.get_host(), err);
+    pub async fn send(&self, msg: Message) -> Result<(), GenError> {
+        let line = msg.to_string();
         /* passing to an async fn and awaiting on it is gonna
          * cause lifetime problems with a &str... */
         self.send_line(&line).await?;
-        Ok(())
-    }
-    
-    pub async fn send_rpl(&self, reply: ircReply) -> Result<(), GenError> { /* GDB+ */
-        /* passing to an async fn and awaiting on it is gonna
-         * cause lifetime problems with a &str... */
-        let mut line = reply.format(&self.irc.get_host(), &self.get_user().get_nick());
-        /* break up long messages if neccessary,
-         * reply::split essentially returns line, None when
-         * line is not larger than MAX_MSG_SIZE */
-        loop {
-            let (trim, rest_opt) = reply::split(&line);
-            self.send_line(&trim).await?;
-            if let Some(rest) = rest_opt {
-                line = rest;
-            } else {
-                break;
-            }
-        }
         Ok(())
     }
 
