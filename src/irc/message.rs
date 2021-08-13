@@ -15,53 +15,12 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 use crate::irc::rfc_defs as rfc;
+use crate::irc::error::Error as ircError;
 use crate::irc::tags::{Tags, parse_tags};
 use crate::irc::prefix::{Prefix, parse_prefix};
 use std::collections::HashMap;
 use std::iter::Peekable;
-use std::{error, fmt};
 use std::str::{Chars, FromStr};
-
-#[derive(Debug)]
-pub enum ParseError {
-    NoCommand,
-    MessageTooLong,
-    InvalidKey(String),
-    InvalidValue(String),
-    InvalidNick(String),
-    InvalidUser(String),
-    InvalidHost(String),
-    InvalidNickOrHost(String),
-    InvalidCommand(String),
-    EmptyMessage,
-    EmptyName,
-    EmptyNick,
-    EmptyHost,
-    EmptyUser,
-}
-
-impl error::Error for ParseError {}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ParseError::EmptyName => write!(f, "Empty name (nick/host) field `: CMD`"),
-            ParseError::EmptyNick => write!(f, "Empty nick field `:!user@host CMD`"),
-            ParseError::EmptyUser => write!(f, "Empty user field `:nick!@host CMD`"),
-            ParseError::EmptyHost => write!(f, "Empty host field `:nick!user@ CMD`"),
-            ParseError::EmptyMessage => write!(f, "Empty message"),
-            ParseError::NoCommand => write!(f, "No command given"),
-            ParseError::MessageTooLong => write!(f, "Message must not exceed {} characters", rfc::MAX_MSG_SIZE),
-            ParseError::InvalidKey(key) => write!(f, "Invalid tag key: {}", &key),
-            ParseError::InvalidValue(value) => write!(f, "Invalid tag value: {}", &value),
-            ParseError::InvalidNick(nick) => write!(f, "Invalid nick: {}", &nick),
-            ParseError::InvalidUser(user) => write!(f, "Invalid user string: {}", &user),
-            ParseError::InvalidHost(host) => write!(f, "Invalid host string: {}", &host),
-            ParseError::InvalidNickOrHost(name) => write!(f, "Neither valid nick nor hostname: {}", &name),
-            ParseError::InvalidCommand(cmd) => write!(f, "Invalid command string: {}", &cmd),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct Message {
@@ -77,7 +36,7 @@ impl Message {
         prefix: Option<Prefix>,
         command: String,
         parameters: Vec<String>,
-    ) -> Result<Message, ParseError> {
+    ) -> Result<Message, ircError> {
         Ok(Message {
             tags,
             prefix,
@@ -127,13 +86,13 @@ fn parse_parameters (iter: &mut Peekable<Chars<'_>>) -> Vec<String> {
 }
 
 impl FromStr for Message {
-    type Err = ParseError;
+    type Err = ircError;
 
     fn from_str (s: &str) -> Result<Message, Self::Err> {
         let mut string_iter = s.chars().peekable();
         let tags = if let Some(t) = take_token_with_prefix(&mut string_iter, '@') {
             if t.len() + 2 > rfc::MAX_TAGS_SIZE_TOTAL {
-                return Err(ParseError::MessageTooLong);
+                return Err(ircError::InputTooLong);
             }
             Some(parse_tags(&t))
         } else {
@@ -141,7 +100,7 @@ impl FromStr for Message {
         };
         let rest = string_iter.collect::<String>();
         if rest.len() > rfc::MAX_MSG_SIZE {
-            return Err(ParseError::MessageTooLong);
+            return Err(ircError::InputTooLong);
         }
         string_iter = rest.chars().peekable();
         let prefix = if let Some(p) = take_token_with_prefix(&mut string_iter, ':') {
@@ -151,7 +110,7 @@ impl FromStr for Message {
         };
         let command = take_token(&mut string_iter);
         if !rfc::valid_command(&command) {
-            return Err(ParseError::InvalidCommand(command));
+            return Err(ircError::UnknownCommand(command));
         }
         let parameters = parse_parameters(&mut string_iter);
 
@@ -169,7 +128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_take_token_single_space() -> Result<(), ParseError> {
+    fn test_take_token_single_space() -> Result<(), ircError> {
         let string = "foo bar baz";
         let mut iter = string.chars().peekable();
         let token = take_token(&mut iter);
@@ -186,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn test_take_token_double_space() -> Result<(), ParseError> {
+    fn test_take_token_double_space() -> Result<(), ircError> {
         let string = "foo  bar  baz";
         let mut iter = string.chars().peekable();
         let token = take_token(&mut iter);
@@ -203,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_parameters_nospaces() -> Result<(), ParseError> {
+    fn test_parse_parameters_nospaces() -> Result<(), ircError> {
         let mut iter = "foo".chars().peekable();
         let len = parse_parameters(&mut iter).len();
         assert!(
@@ -214,7 +173,7 @@ mod tests {
     }
 
         #[test]
-    fn test_parse_parameters_single_spaced() -> Result<(), ParseError> {
+    fn test_parse_parameters_single_spaced() -> Result<(), ircError> {
         let mut iter = "foo bar baz".chars().peekable();
         let len = parse_parameters(&mut iter).len();
         assert!(
@@ -225,7 +184,7 @@ mod tests {
     }
 
         #[test]
-    fn test_parse_parameters_with_colon() -> Result<(), ParseError> {
+    fn test_parse_parameters_with_colon() -> Result<(), ircError> {
         let mut iter = "foo :bar baz".chars().peekable();
         let len = parse_parameters(&mut iter).len();
         assert!(
@@ -236,7 +195,7 @@ mod tests {
     }
 
         #[test]
-    fn test_parse_parameters_with_colon_empty() -> Result<(), ParseError> {
+    fn test_parse_parameters_with_colon_empty() -> Result<(), ircError> {
         let mut iter = "foo :".chars().peekable();
         let params = parse_parameters(&mut iter);
         assert!(
@@ -248,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_message_valid() -> Result<(), ParseError> {
+    fn test_parse_message_valid() -> Result<(), ircError> {
         let message_str = ":nickname cmd lol :stuff and things";
         let message = message_str.parse::<Message>()?;
         match message.prefix.unwrap().host {
@@ -264,37 +223,37 @@ mod tests {
     }
     
     #[test]
-    fn test_parse_message_tags_twice() -> Result<(), ParseError> {
+    fn test_parse_message_tags_twice() -> Result<(), ircError> {
         let message_str = "@tag @doubletag :stuff and things";
         match message_str.parse::<Message>() {
             Ok(_) => panic!("expected invalid command error for {}, got ok", message_str),
-            Err(ParseError::InvalidCommand(_)) => Ok(()),
+            Err(ircError::UnknownCommand(_)) => Ok(()),
             Err(e) => panic!("expected invalid command error for {}, got ok", e),
         }
     }
     
     #[test]
-    fn test_parse_message_prefix_twice() -> Result<(), ParseError> {
+    fn test_parse_message_prefix_twice() -> Result<(), ircError> {
         let message_str = ":foobar!x@y :stuff and things";
         match message_str.parse::<Message>() {
             Ok(_) => panic!("expected invalid command error for {}, got ok", message_str),
-            Err(ParseError::InvalidCommand(_)) => Ok(()),
+            Err(ircError::UnknownCommand(_)) => Ok(()),
             Err(e) => panic!("expected invalid command error for, but got {:#?}", e),
         }
     }
     
     #[test]
-    fn test_parse_message_tags_after_prefix() -> Result<(), ParseError> {
+    fn test_parse_message_tags_after_prefix() -> Result<(), ircError> {
         let message_str = ":foobar!x@y @tags and things";
         match message_str.parse::<Message>() {
             Ok(_) => panic!("expected invalid command error for {}, got ok", message_str),
-            Err(ParseError::InvalidCommand(_)) => Ok(()),
+            Err(ircError::UnknownCommand(_)) => Ok(()),
             Err(e) => panic!("expected invalid command error but got {:#?}", e),
         }
     }
 
     #[test]
-    fn test_message_too_long() -> Result<(), ParseError> {
+    fn test_message_too_long() -> Result<(), ircError> {
         let message_str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
     aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
     aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
@@ -304,7 +263,7 @@ mod tests {
     aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         match message_str.parse::<Message>() {
             Ok(_) => panic!("expected message too long error for"),
-            Err(ParseError::MessageTooLong) => Ok(()),
+            Err(ircError::InputTooLong) => Ok(()),
             Err(e) => panic!("expected message too long error but got {:#?}", e),
         }
     }

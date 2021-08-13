@@ -23,7 +23,7 @@ use crate::irc::reply::Reply as ircReply;
 use crate::irc::reply as reply;
 use crate::irc::{self, Core, User, NamedEntity};
 use crate::irc::chan::ChanError;
-use crate::irc::message::{Message, ParseError};
+use crate::irc::message::Message;
 use std::error;
 use std::fmt;
 use std::io::Error as ioError;
@@ -47,7 +47,6 @@ use tokio_native_tls::native_tls::Error as tntTlsErr;
 #[derive(Debug)]
 pub enum GenError {
     Io(ioError),
-    Parse(ParseError),
     IRC(ircError),
     Mpsc(mpscSendErr<String>),
     Chan(ChanError),
@@ -61,7 +60,6 @@ impl fmt::Display for GenError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             GenError::Io(ref err) => write!(f, "IO Error: {}", err),
-            GenError::Parse(ref err) => write!(f, "Parse Error: {}", err),
             GenError::IRC(ref err) => write!(f, "IRC Error: {}", err),
             GenError::Mpsc(ref err) => write!(f, "MPSC Send Error: {}", err),
             GenError::Chan(ref err) => write!(f, "Channel Error: {}", err),
@@ -81,7 +79,6 @@ impl error::Error for GenError {
             // to a trait object `&Error`. This works because both error types
             // implement `Error`.
             GenError::Io(ref err) => Some(err),
-            GenError::Parse(ref err) => Some(err),
             GenError::IRC(ref err) => Some(err),
             GenError::Mpsc(ref err) => Some(err),
             GenError::DeadClient(_user) => None,
@@ -96,12 +93,6 @@ impl error::Error for GenError {
 impl From<ioError> for GenError {
     fn from(err: ioError) -> GenError {
         GenError::Io(err)
-    }
-}
-
-impl From<ParseError> for GenError {
-    fn from(err: ParseError) -> GenError {
-        GenError::Parse(err)
     }
 }
 
@@ -292,7 +283,6 @@ async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(
         if line.is_empty() { continue }
         match error_wrapper(&handler.client, irc, &line).await {
             Err(GenError::IRC(err)) => handler.client.send_err(err).await?,
-            Err(GenError::Parse(err)) => handler.client.send_err(ircError::from(err)).await?,
             Err(GenError::Chan(_err)) => (), /* non-fatal, will figure out how to handle later */
             Err(GenError::Io(err)) => return Err(GenError::Io(err)),
             Err(GenError::Mpsc(err)) => return Err(GenError::Mpsc(err)),

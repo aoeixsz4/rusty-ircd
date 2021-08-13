@@ -15,16 +15,6 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 use std::{error, fmt};
-use crate::irc::message::ParseError;
-
-impl From<ParseError> for Error {
-    fn from(err: ParseError) -> Error {
-        match err {
-            ParseError::InvalidNick(nick) => Error::ErroneusNickname(nick),
-            _ => Error::UnknownError,
-        }
-    }
-}
 
 impl error::Error for Error {}
 impl fmt::Display for Error {
