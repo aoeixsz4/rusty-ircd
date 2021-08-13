@@ -14,15 +14,15 @@
 *  You should have received a copy of the GNU Lesser General Public License
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
-use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::str::CharIndices;
+use std::net::{Ipv4Addr, Ipv6Addr};
 pub const MAX_HOSTNAME_SIZE: usize = 253;
 pub const MAX_SHORTNAME_SIZE: usize = 63;
 pub const MAX_CHANNAME_SIZE: usize = 50;
 pub const MAX_NICKNAME_SIZE: usize = 9;
 pub const CHANNELID_SIZE: usize = 5;
 pub const MAX_MSG_SIZE: usize = 512;
+pub const MAX_TAGS_SIZE: usize = 4094;
+pub const MAX_TAGS_SIZE_TOTAL: usize = 8191;
 pub const MAX_MSG_PARAMS: usize = 15; // including tailing, but not including COMMAND
 pub const LETTER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 pub const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -71,11 +71,6 @@ pub fn valid_ipv4_addr(host_addr: &str) -> bool {
     }
 }
 
-// again, might be a library function for this?
-// also, this only checks if the string format is generally valid
-// to what the rfc 2812 says it should be,
-// so for example the ipv4 parts can be 352.437.999.325,
-// and we won't complain
 pub fn valid_ipv6_addr(host_addr: &str) -> bool {
     match host_addr.parse::<Ipv6Addr>() {
         Ok(_) => true,
@@ -83,11 +78,19 @@ pub fn valid_ipv6_addr(host_addr: &str) -> bool {
     }
 }
 
-pub fn valid_key(tag_key: &str) -> bool {
+pub fn valid_key(mut tag_key: &str) -> bool {
     let mut allowed = String::new();
     allowed.push_str(LETTER);
     allowed.push_str(DIGIT);
     allowed.push_str("-");
+    if let Some(c) = tag_key.chars().nth(0) {
+        if c == '+' {
+            /* luckily we know '+' is a single byte character... */
+            tag_key = &tag_key[1..];
+        }
+    } else {
+        return false;
+    }
     if let Some((vendor, key)) = tag_key.split_once('/') {
         if !valid_hostname(vendor) || !matches_allowed(key, &allowed) {
             false
@@ -520,7 +523,7 @@ mod tests {
     fn key_cases() {
         assert!(
             !valid_key("asd{f"),
-            "key cannot contain { char",
+            "key cannot contain a curly brace char",
         );
         assert!(
             valid_key("asd/f"),
@@ -533,6 +536,14 @@ mod tests {
         assert!(
             valid_key("asdf1234-"),
             "key can be alphanumeric plus hyphen",
+        );
+        assert!(
+            valid_key("+asdf1234-"),
+            "key can be alphanumeric plus hyphen, can start with +",
+        );
+        assert!(
+            !valid_key("asd+f1234-"),
+            "key can be alphanumeric plus hyphen, cannot contain + after the first char",
         );
     }
 

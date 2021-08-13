@@ -15,6 +15,7 @@
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 use crate::irc::rfc_defs as rfc;
+use crate::irc::tags::{Tags, parse_tags};
 use std::collections::HashMap;
 use std::iter::Peekable;
 use std::{error, fmt};
@@ -25,7 +26,6 @@ use super::rfc_defs::valid_nick;
 #[derive(Debug)]
 pub enum ParseError {
     NoCommand,
-    TagsTooLong,
     MessageTooLong,
     InvalidKey(String),
     InvalidValue(String),
@@ -52,7 +52,6 @@ impl fmt::Display for ParseError {
             ParseError::EmptyHost => write!(f, "Empty host field `:nick!user@ CMD`"),
             ParseError::EmptyMessage => write!(f, "Empty message"),
             ParseError::NoCommand => write!(f, "No command given"),
-            ParseError::TagsTooLong => write!(f, "Metadata must not exceed {} characters", rfc::MAX_MSG_SIZE),
             ParseError::MessageTooLong => write!(f, "Message must not exceed {} characters", rfc::MAX_MSG_SIZE),
             ParseError::InvalidKey(key) => write!(f, "Invalid tag key: {}", &key),
             ParseError::InvalidValue(value) => write!(f, "Invalid tag value: {}", &value),
@@ -72,7 +71,6 @@ pub enum HostType {
     HostAddrV6(String),
 }
 
-pub type Tags = HashMap<String, Option<String>>;
 
 #[derive(Debug)]
 pub enum Prefix {
@@ -131,7 +129,7 @@ pub struct Message {
 
 impl Message {
     pub fn new(
-        tags: Option<HashMap<String, Option<String>>>,
+        tags: Option<HashMap<String, String>>,
         prefix: Option<Prefix>,
         command: String,
         parameters: Vec<String>,
@@ -184,37 +182,16 @@ fn parse_parameters (iter: &mut Peekable<Chars<'_>>) -> Vec<String> {
     parameters
 }
 
-fn parse_tags (tag_string: &str) -> Result<Tags, ParseError> {
-    let mut tags = HashMap::new();
-    if tag_string.len() > rfc::MAX_MSG_SIZE {
-        return Err(ParseError::TagsTooLong);
-    }
-    for s in tag_string.split(';') {
-        if let Some((key, val)) = s.split_once('=') {
-            if !rfc::valid_key(key) {
-                return Err(ParseError::InvalidKey(key.to_string()));
-            }
-            if !rfc::valid_value(val) {
-                return Err(ParseError::InvalidValue(key.to_string()));
-            }
-            tags.insert(key.to_string(), Some(val.to_string()));
-        } else {
-            if !rfc::valid_key(s) {
-                return Err(ParseError::InvalidKey(s.to_string()));
-            }
-            tags.insert (s.to_string(), None);
-        }
-    }
-    return Ok(tags);
-}
-
 impl FromStr for Message {
     type Err = ParseError;
 
     fn from_str (s: &str) -> Result<Message, Self::Err> {
         let mut string_iter = s.chars().peekable();
         let tags = if let Some(t) = take_token_with_prefix(&mut string_iter, '@') {
-            Some(parse_tags(&t)?)
+            if t.len() + 2 > rfc::MAX_TAGS_SIZE_TOTAL {
+                return Err(ParseError::MessageTooLong);
+            }
+            Some(parse_tags(&t))
         } else {
             None
         };
@@ -327,45 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tags_empty_key() -> Result<(), ParseError> {
-        let tags = parse_tags("id=124;foo")?;
-        assert!(
-            tags.contains_key("foo"),
-            "`id=124;foo` tagstring must contain key foo"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_parse_tags_invalid_key() -> Result<(), ParseError> {
-        let tags = "i{d=124;foo";
-        match parse_tags(tags) {
-            Ok(_) => panic!("expected error for invalid key in {}", tags),
-            Err(ParseError::InvalidKey(_)) => Ok(()),
-            Err(e) => panic!("expected error for invalid key, got {:#?}", e),
-        }
-    }
-
-    #[test]
-    fn test_parse_tags_valid_key() -> Result<(), ParseError> {
-        let tags = "127.0.0.1/id=124;foo";
-        match parse_tags(tags) {
-            Ok(_) => Ok(()),
-            Err(e) => panic!("expected ok for valid key, got {:#?}", e),
-        }
-    }
-
-    #[test]
-    fn test_parse_tags_invalid_vendor() -> Result<(), ParseError> {
-        let tags = "127...1/id=124;foo";
-        match parse_tags(tags) {
-            Ok(_) => panic!("expected error for invalid key in {}", tags),
-            Err(ParseError::InvalidKey(_)) => Ok(()),
-            Err(e) => panic!("expected error for invalid key, got {:#?}", e),
-        }
-    }
-
-    #[test]
     fn test_parse_message_valid() -> Result<(), ParseError> {
         let message_str = ":nickname cmd lol :stuff and things";
         let message = message_str.parse::<Message>()?;
@@ -427,22 +365,6 @@ mod tests {
             Ok(_) => panic!("expected message too long error for"),
             Err(ParseError::MessageTooLong) => Ok(()),
             Err(e) => panic!("expected message too long error but got {:#?}", e),
-        }
-    }
-
-    #[test]
-    fn test_metadata_too_long() -> Result<(), ParseError> {
-        let message_str = "@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa asdf lol foobar";
-        match message_str.parse::<Message>() {
-            Ok(_) => panic!("expected metadata too long error for"),
-            Err(ParseError::TagsTooLong) => Ok(()),
-            Err(e) => panic!("expected metadata too long error but got {:#?}", e),
         }
     }
 }
