@@ -19,7 +19,6 @@ pub mod error;
 pub mod reply;
 pub mod rfc_defs;
 pub mod message;
-pub mod command;
 pub mod tags;
 pub mod prefix;
 use crate::{USER_MODES, CHAN_MODES};

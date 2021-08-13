@@ -18,20 +18,20 @@ impl PartialEq for Prefix {
 
 
 /* here we assume Prefix contains valid nick/user/host strings */
-pub fn assemble_prefix(p: Prefix) -> String {
+pub fn assemble_prefix(p: &Prefix) -> String {
     let mut out = String::new();
-    if let Some(nick) = p.nick {
-        out.push_str(&nick);
+    if let Some(nick) = &p.nick {
+        out.push_str(nick);
         if p.host != None {
-            if let Some(user) = p.user {
+            if let Some(user) = &p.user {
                 out.push_str("!");
-                out.push_str(&user);
+                out.push_str(user);
             }
             out.push_str("@");
         }
     }
-    if let Some(host) = p.host {
-        out.push_str(&host);
+    if let Some(host) = &p.host {
+        out.push_str(host);
     }
     out
 }
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn test_assemble_prefix() {
         assert_eq!(
-            assemble_prefix(Prefix {
+            assemble_prefix(&Prefix {
                 nick: Some("aoei".to_string()),
                 user: Some("~ykstort".to_string()),
                 host: Some("localhost".to_string()),
@@ -103,7 +103,7 @@ mod tests {
             "format is <nick>!<user>@<host>"
         );
         assert_eq!(
-            assemble_prefix(Prefix {
+            assemble_prefix(&Prefix {
                 nick: Some("aoei".to_string()),
                 user: None,
                 host: Some("localhost".to_string()),
@@ -112,7 +112,7 @@ mod tests {
             "format is <nick>@<host>"
         );
         assert_eq!(
-            assemble_prefix(Prefix {
+            assemble_prefix(&Prefix {
                 nick: Some("aoei".to_string()),
                 user: None,
                 host: None,
@@ -121,7 +121,7 @@ mod tests {
             "format is <nick>"
         );
         assert_eq!(
-            assemble_prefix(Prefix {
+            assemble_prefix(&Prefix {
                 nick: None,
                 user: None,
                 host: Some("localhost".to_string()),
@@ -130,7 +130,7 @@ mod tests {
             "format is <host>"
         );
         assert_eq!(
-            assemble_prefix(Prefix {
+            assemble_prefix(&Prefix {
                 nick: None,
                 user: Some("~ykstort".to_string()),
                 host: Some("localhost".to_string()),
@@ -139,7 +139,7 @@ mod tests {
             "format is <host>, user/ident should not be present unless both nick and host are also present"
         );
         assert_eq!(
-            assemble_prefix(Prefix {
+            assemble_prefix(&Prefix {
                 nick: Some("aoei".to_string()),
                 user: Some("~ykstort".to_string()),
                 host: None,
