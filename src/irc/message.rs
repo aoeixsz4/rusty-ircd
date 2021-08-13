@@ -16,9 +16,10 @@
 */
 use crate::irc::rfc_defs as rfc;
 use crate::irc::error::Error as ircError;
-use crate::irc::tags::{Tags, parse_tags};
-use crate::irc::prefix::{Prefix, parse_prefix};
+use crate::irc::tags::{Tags, assemble_tags, parse_tags};
+use crate::irc::prefix::{Prefix, assemble_prefix, parse_prefix};
 use std::collections::HashMap;
+use std::fmt;
 use std::iter::Peekable;
 use std::str::{Chars, FromStr};
 
@@ -72,6 +73,20 @@ fn take_token_with_prefix (
     }
 }
 
+fn assemble_parameters (params: &Vec<String>) -> String {
+    let mut out = String::new();
+    for i in 0 .. params.len() {
+        if i != 0 {
+            out.push_str(" ");
+        }
+        if i == params.len() - 1 && params[i].find(' ') != None {
+            out.push_str(":");
+        }
+        out.push_str(&params[i]);
+    }
+    out
+}
+
 fn parse_parameters (iter: &mut Peekable<Chars<'_>>) -> Vec<String> {
     let mut parameters = Vec::new();
     while let Some(c) = iter.peek() {
@@ -120,6 +135,34 @@ impl FromStr for Message {
             command,
             parameters,
         })
+    }
+}
+
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let tags = if let Some(t) = &self.tags {
+            format!("@{} ", assemble_tags(t))
+        } else {
+            "".to_string()
+        };
+        /* need to do something if tag_string.as_bytes().len() exceeds rfc::MAX_TAGS_SIZE_TOTAL */
+        if tags.as_bytes().len() > rfc::MAX_TAGS_SIZE_TOTAL {
+            return Err(fmt::Error);
+        }
+        let prefix = if let Some(p) = &self.prefix {
+            format!(":{} ", assemble_prefix(p))
+        } else {
+            "".to_string()
+        };
+        let message = if self.parameters.len() > 0 {
+            format!("{}{} {}\r\n", prefix, self.command, &assemble_parameters(&self.parameters))
+        } else {
+            format!("{}{}\r\n", prefix, self.command)
+        };
+        if message.as_bytes().len() > rfc::MAX_MSG_SIZE {
+            return Err(fmt::Error);
+        }
+        write!(f, "{}{}", tags, message)
     }
 }
 
@@ -266,5 +309,55 @@ mod tests {
             Err(ircError::InputTooLong) => Ok(()),
             Err(e) => panic!("expected message too long error but got {:#?}", e),
         }
+    }
+
+    #[test]
+    fn test_display_message() {
+        let mut tags = HashMap::new();
+        tags.insert("foo".to_string(), "bar".to_string());
+        let prefix = Prefix { nick: Some("aoei".to_string()), user: Some("~ykkie".to_string()), host: Some("excession".to_string()) };
+        let mut my_params = Vec::new();
+        my_params.push("joanna".to_string());
+        let msg = Message::new(Some(tags), Some(prefix), "NICK".to_string(), my_params);
+        assert_eq!(
+            "@foo=bar :aoei!~ykkie@excession NICK joanna\r\n",
+            format!("{}", msg.unwrap()),
+            "forms a valid IRC protocol message with @tags :prefix COMMAND param CR LF"
+        );
+    }
+
+    #[test]
+    fn test_display_message_trailing_param() {
+        let prefix = Prefix { nick: Some("aoei".to_string()), user: Some("~ykkie".to_string()), host: Some("excession".to_string()) };
+        let mut my_params = Vec::new();
+        my_params.push("this is a lengthy message with spaces in".to_string());
+        let msg = Message::new(None, Some(prefix), "PRIVMSG".to_string(), my_params);
+        assert_eq!(
+            ":aoei!~ykkie@excession PRIVMSG :this is a lengthy message with spaces in\r\n",
+            format!("{}", msg.unwrap()),
+            "trailing parameter should be prefixed with a colon"
+        );
+    }
+
+    #[test]
+    fn test_display_message_no_params() {
+        let prefix = Prefix { nick: Some("aoei".to_string()), user: Some("~ykkie".to_string()), host: Some("excession".to_string()) };
+        let my_params = Vec::new();
+        let msg = Message::new(None, Some(prefix), "LIST".to_string(), my_params);
+        assert_eq!(
+            ":aoei!~ykkie@excession LIST\r\n",
+            format!("{}", msg.unwrap()),
+            "trailing parameter should be prefixed with a colon"
+        );
+    }
+
+    #[test]
+    fn test_assemble_parameters() {
+        let my_params = vec![String::from("asdf"), String::from("foo"), String::from("trailing param")];
+        assert_eq!(
+            assemble_parameters(&my_params),
+            String::from("asdf foo :trailing param"),
+            "trailling param must be prefixed with a colon"
+        );
     }
 }

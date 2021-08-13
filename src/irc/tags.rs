@@ -117,7 +117,7 @@ fn recurse (mut i: Iter<String, String>, s: &mut String) {
     }
 }
 
-pub fn assemble_tags (tags: Tags) -> String {
+pub fn assemble_tags (tags: &Tags) -> String {
     let mut out = String::new();
     let mut iter = tags.iter();
     if let Some((k, v)) = iter.next() {
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn test_assembly() {
         let tags = parse_tags("foo=bar;asdf=baz");
-        let assembled = assemble_tags(tags);
+        let assembled = assemble_tags(&tags);
         assert_eq!(
             assembled == "foo=bar;asdf=baz"
             || assembled == "asdf=baz;foo=bar", true,
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn test_assembly_empty_key() {
         let tags = parse_tags("foo=;asdf=baz");
-        let assembled = assemble_tags(tags);
+        let assembled = assemble_tags(&tags);
         assert_eq!(
             assembled == "foo;asdf=baz"
             || assembled == "asdf=baz;foo", true,
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn test_assembly_escape() {
         let tags = parse_tags("foo=;asdf=baz\\n");
-        let assembled = assemble_tags(tags);
+        let assembled = assemble_tags(&tags);
         assert_eq!(
             assembled == "foo;asdf=baz\\n"
             || assembled == "asdf=baz\\n;foo", true,
