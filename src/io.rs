@@ -24,9 +24,6 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio_native_tls::TlsStream;
 
-/* implement AsyncRead/Write and AsyncRead/WriteExt on wrappers so that the
- * rest of our code need not care whether we're dealing with ClearText or
- * a TLS/SSL connection */
 #[derive(Debug)]
 pub enum ReadHalfWrap {
     ClearText(ReadHalf<TcpStream>),
