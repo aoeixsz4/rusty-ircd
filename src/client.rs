@@ -19,7 +19,6 @@ extern crate tokio;
 extern crate tokio_native_tls;
 use crate::io::{ReadHalfWrap, WriteHalfWrap};
 use crate::irc::{self, Core, User, NamedEntity};
-use crate::irc::err_defs as err;
 use crate::irc::message::Message;
 use std::error;
 use std::fmt;
@@ -161,30 +160,41 @@ pub async fn run_client_handler(
 
 async fn process_lines(handler: &mut ClientHandler, irc: &Arc<Core>) -> Result<(), GenError> {
     while let Some(line) = handler.stream.next_line().await? {
-        if line.is_empty() { continue }
-        match error_wrapper(&handler.client, irc, &line).await {
-            Err(GenError::Io(err)) => return Err(GenError::Io(err)),
-            Err(GenError::Mpsc(err)) => return Err(GenError::Mpsc(err)),
-            Err(GenError::DeadClient(user)) => attempt_cleanup(irc, user),
-            Err(GenError::DeadUser(_)) => (),
-            Err(GenError::Tokio(err)) => return Err(GenError::Tokio(err)),
-            Err(GenError::TLS(err)) => return Err(GenError::TLS(err)),
-            Ok(replies) => {
-                for message in replies {
-                    handler.client.send(message).await?
+        if line.is_empty() {
+            loop {
+                let msg_opt = {
+                    let mut lock_ptr = handler.client.msgq.lock().unwrap();
+                    if lock_ptr.len() > 0 {
+                        Some(lock_ptr.remove(0))
+                    } else {
+                        None
+                    }
+                };
+                match msg_opt {
+                    Some(msg) => handler.client.send(msg).await?,
+                    None => break,
                 }
-            },
+            }
+        }
+        if let Ok(parsed) = line.parse::<Message>() {
+            irc::command(irc, &handler.client, parsed).await?;
+        }
+        loop {
+            let msg_opt = {
+                let mut lock_ptr = handler.client.msgq.lock().unwrap();
+                if lock_ptr.len() > 0 {
+                    Some(lock_ptr.remove(0))
+                } else {
+                    None
+                }
+            };
+            match msg_opt {
+                Some(msg) => handler.client.send(msg).await?,
+                None => break,
+            }
         }
     }
     Ok(())
-}
-
-async fn error_wrapper (client: &Arc<Client>, irc: &Arc<Core>, line: &str) -> Result<Vec<Message>, GenError> {
-    if let Ok(parsed) = line.parse::<Message>() {
-        irc::command(irc, client, parsed).await
-    } else {
-        Ok(vec![irc.gen_reply(err::ERR_UNKNOWNERROR, vec![])])
-    }
 }
 
 pub fn attempt_cleanup(irc: &Core, user: Arc<User>) {
@@ -237,6 +247,7 @@ pub struct Client {
     host: Host,
     irc: Arc<Core>,
     tx: MsgSendr,
+    msgq: Mutex<Vec<Message>>,
 }
 
 impl Clone for Client {
@@ -247,6 +258,7 @@ impl Clone for Client {
             host: self.host.clone(),
             irc: Arc::clone(&self.irc),
             tx: self.tx.clone(),
+            msgq: Mutex::new(Vec::new()),
         }
     }
 }
@@ -266,6 +278,7 @@ impl Client {
             host,
             irc: Arc::clone(irc),
             tx,
+            msgq: Mutex::new(Vec::new()),
         })
     }
 
@@ -313,6 +326,11 @@ impl Client {
         &self.irc
     }
 
+    pub fn queue_msg(&self, msg: Message) {
+        let mut lock_ptr = self.msgq.lock().unwrap();
+        lock_ptr.push(msg);
+    }
+
     pub async fn send(&self, msg: Message) -> Result<(), GenError> {
         let line = msg.to_string();
         self.send_line(&line).await?;
@@ -321,7 +339,6 @@ impl Client {
 
     pub async fn send_line(&self, line: &str) -> Result<(), mpscSendErr<String>> {
         let mut string = String::from(line);
-        string.push_str("\r\n");
         self.tx.clone().send(string).await
     }
 }

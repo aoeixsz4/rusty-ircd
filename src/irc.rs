@@ -187,6 +187,12 @@ impl User {
         Ok(())
     }
 
+    pub fn queue_msg(self: &Arc<Self>, msg: Message) -> Result<(), GenError> {
+        let my_client = self.fetch_client()?;
+        my_client.queue_msg(msg);
+        Ok(())
+    }
+
     pub fn upgrade(weak_ptr: &Weak<Self>, nick: &str) -> Result<Arc<Self>, GenError> {
         if let Some(good_ptr) = Weak::upgrade(&weak_ptr) {
             Ok(good_ptr)
@@ -367,19 +373,20 @@ impl Core {
     }
 }
 
-pub async fn command(irc: &Arc<Core>, client: &Arc<Client>, message: Message) -> Result<Vec<Message>, GenError> {
+pub async fn command(irc: &Arc<Core>, client: &Arc<Client>, message: Message) -> Result<(), GenError> {
     let registered = client.is_registered();
     let cmd = message.command.to_ascii_uppercase();
     let params = message.parameters;
 
     match &cmd[..] {
-        "NICK" => nick(irc, client, params).await,
-        "USER" => user(irc, client, params).await,
-        "PRIVMSG" if registered => msg(irc, &client.get_user(), params, false).await,
-        "NOTICE" if registered => msg(irc, &client.get_user(), params, true).await,
-        "PART" | "JOIN" | "PRIVMSG" | "NOTICE" if !registered => Ok(vec![irc.gen_reply(err::ERR_NOTREGISTERED, vec![])]),
-        _ => Ok(vec![irc.gen_reply(err::ERR_UNKNOWNCOMMAND, vec![cmd])]),
+        "NICK" => nick(irc, client, params).await?,
+        "USER" => user(irc, client, params).await?,
+        "PRIVMSG" if registered => msg(irc, &client.get_user(), params, false).await?,
+        "NOTICE" if registered => msg(irc, &client.get_user(), params, true).await?,
+        "PART" | "JOIN" | "PRIVMSG" | "NOTICE" if !registered => client.queue_msg(irc.gen_reply(err::ERR_NOTREGISTERED, vec![])),
+        _ => client.queue_msg(irc.gen_reply(err::ERR_NOTREGISTERED, vec![])),
     }
+    Ok(())
 }
 
 pub async fn msg(
@@ -387,22 +394,21 @@ pub async fn msg(
     send_u: &Arc<User>,
     mut params: Vec<String>,
     notice: bool,
-) -> Result<Vec<Message>, GenError> {
-    let mut replies = Vec::new();
+) -> Result<(), GenError> {
     if params.is_empty() {
         if !notice {
-            replies.push(irc.gen_reply(err::ERR_NEEDMOREPARAMS, vec!["PRIVMSG".to_string()]));
+            send_u.queue_msg(irc.gen_reply(err::ERR_NOTREGISTERED, vec![]))?;
         }
-        return Ok(replies);
+        return Ok(());
     }
     let targets = params.remove(0); 
     let cmd = if notice { "NOTICE" } else { "PRIVMSG" };
 
     if params.is_empty() {
         if !notice {
-            replies.push(irc.gen_reply(err::ERR_NEEDMOREPARAMS, vec!["PRIVMSG".to_string()]));
+            send_u.queue_msg(irc.gen_reply(err::ERR_NEEDMOREPARAMS, vec![cmd.to_string()]))?
         }
-        return Ok(replies);
+        return Ok(());
     }
     let message = params.join(" ");
     trace!("{} from user {} to {}, content: {}", cmd, send_u.get_nick(), targets, message);
@@ -419,16 +425,16 @@ pub async fn msg(
                 }
             },
             Some(NamedEntity::Nick(_)) => (),
-            None => replies.push(irc.gen_reply(err::ERR_NOSUCHNICK, vec![target.to_string()])),
+            None => send_u.queue_msg(irc.gen_reply(err::ERR_NOSUCHNICK, vec![target.to_string()]))?,
         }
     }
-    Ok(replies)
+    Ok(())
 }
 
-pub async fn user(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Result<Vec<Message>, GenError> {
-    let mut replies = Vec::new();
+pub async fn user(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Result<(), GenError> {
     if params.len() != 4 {
-        return Ok(vec![irc.gen_reply(err::ERR_NEEDMOREPARAMS, vec!["USER".to_string()])]);
+        client.queue_msg(irc.gen_reply(err::ERR_NEEDMOREPARAMS, vec!["USER".to_string()]));
+        return Ok(())
     }
     let username = params[0].clone();
     let real_name = params[3].clone();
@@ -443,20 +449,20 @@ pub async fn user(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Resu
             }))))
         }
         ClientType::User(_user_ref) => {
-            replies.push(irc.gen_reply(err::ERR_ALREADYREGISTRED, vec![]));
-            return Ok(replies);
+            client.queue_msg(irc.gen_reply(err::ERR_ALREADYREGISTRED, vec!["USER".to_string()]));
+            return Ok(());
         }
         ClientType::ProtoUser(proto_user_ref) => {
             let proto_user = proto_user_ref.lock().unwrap();
             if let Some(nick) = &proto_user.nick {
                 if let Some(user) = irc.register(client, nick.clone(), username.clone(), real_name) {
-                    replies.push(irc.gen_reply(rpl::RPL_WELCOME, vec![nick.clone(), username.clone(), client.get_host_string()]));
-                    replies.push(irc.gen_reply(rpl::RPL_YOURHOST, vec![irc.get_host(), irc.get_version()]));
-                    replies.push(irc.gen_reply(rpl::RPL_CREATED,vec![irc.get_date()]));
-                    replies.push(irc.gen_reply(rpl::RPL_MYINFO, vec![irc.get_host(), irc.get_version(), irc.get_umodes(), irc.get_chanmodes()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_WELCOME, vec![nick.clone(), username.clone(), client.get_host_string()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_YOURHOST, vec![irc.get_host(), irc.get_version()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_CREATED,vec![irc.get_date()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_MYINFO, vec![irc.get_host(), irc.get_version(), irc.get_umodes(), irc.get_chanmodes()]));
                     Some(ClientType::User(user))
                 } else {
-                    replies.push(irc.gen_reply(err::ERR_NICKNAMEINUSE, vec![nick.clone()]));
+                    client.queue_msg(irc.gen_reply(err::ERR_NICKNAMEINUSE, vec![nick.clone()]));
                     None
                 }
             } else {
@@ -470,26 +476,25 @@ pub async fn user(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Resu
     if let Some(new_client_type) = result {
         client.set_client_type(new_client_type);
     }
-    Ok(replies)
+    Ok(())
 }
 
-pub async fn nick(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Result<Vec<Message>, GenError> {
-    let mut replies = Vec::new();
+pub async fn nick(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Result<(), GenError> {
     let nick;
     if let Some(n) = params.iter().next() {
         nick = n.to_string();
     } else {
-        replies.push(irc.gen_reply(err::ERR_NEEDMOREPARAMS, vec!["NICK".to_string()]));
-        return Ok(replies);
+        client.queue_msg(irc.gen_reply(err::ERR_NEEDMOREPARAMS, vec!["NICK".to_string()]));
+        return Ok(());
     }
     if !rfc::valid_nick(&nick) {
-        replies.push(irc.gen_reply(err::ERR_ERRONEOUSNICKNAME, vec![nick.to_string()]));
-        return Ok(replies);
+        client.queue_msg(irc.gen_reply(err::ERR_ERRONEOUSNICKNAME, vec![nick.to_string()]));
+        return Ok(());
     }
 
     if let Some(_hit) = irc.get_name(&nick) {
-        replies.push(irc.gen_reply(err::ERR_NICKNAMEINUSE, vec![nick.to_string()]));
-        return Ok(replies);
+        client.queue_msg(irc.gen_reply(err::ERR_NICKNAMEINUSE, vec![nick.to_string()]));
+        return Ok(());
     }
     let result = match client.get_client_type() {
         ClientType::Dead => None,
@@ -502,7 +507,7 @@ pub async fn nick(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Resu
         }
         ClientType::User(user_ref) => {
             if let Err(err::Error::HashCollision) = user_ref.change_nick(&nick) {
-                replies.push(irc.gen_reply(err::ERR_NICKNAMEINUSE, vec![nick.to_string()]));
+                client.queue_msg(irc.gen_reply(err::ERR_NICKNAMEINUSE, vec![nick.to_string()]));
             }
             None
         }
@@ -515,10 +520,10 @@ pub async fn nick(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Resu
                 let username = proto_user.username.as_ref();
                 let real_name = proto_user.real_name.as_ref();
                 if let Some(user) = irc.register(client, nick.clone(), username.unwrap().to_string(), real_name.unwrap().to_string()) {
-                    replies.push(irc.gen_reply(rpl::RPL_WELCOME, vec![nick.clone(), username.unwrap().clone(), client.get_host_string()]));
-                    replies.push(irc.gen_reply(rpl::RPL_YOURHOST, vec![irc.get_host(), irc.get_version()]));
-                    replies.push(irc.gen_reply(rpl::RPL_CREATED,vec![irc.get_date()]));
-                    replies.push(irc.gen_reply(rpl::RPL_MYINFO, vec![irc.get_host(), irc.get_version(), irc.get_umodes(), irc.get_chanmodes()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_WELCOME, vec![nick.clone(), username.unwrap().clone(), client.get_host_string()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_YOURHOST, vec![irc.get_host(), irc.get_version()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_CREATED,vec![irc.get_date()]));
+                    client.queue_msg(irc.gen_reply(rpl::RPL_MYINFO, vec![irc.get_host(), irc.get_version(), irc.get_umodes(), irc.get_chanmodes()]));
                     Some(ClientType::User(user))
                 } else {
                     None
@@ -530,5 +535,5 @@ pub async fn nick(irc: &Core, client: &Arc<Client>, params: Vec<String>) -> Resu
     if let Some(new_client_type) = result {
         client.set_client_type(new_client_type);
     }
-    Ok(replies)
+    Ok(())
 }
