@@ -21,6 +21,7 @@ pub mod rfc_defs;
 pub mod message;
 pub mod command;
 pub mod tags;
+pub mod prefix;
 use crate::{USER_MODES, CHAN_MODES};
 use crate::client;
 use crate::client::{Client, ClientType, ClientReply, ClientReplies, GenError, Host};
