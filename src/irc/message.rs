@@ -91,7 +91,7 @@ impl FromStr for Message {
     fn from_str (s: &str) -> Result<Message, Self::Err> {
         let mut string_iter = s.chars().peekable();
         let tags = if let Some(t) = take_token_with_prefix(&mut string_iter, '@') {
-            if t.len() + 2 > rfc::MAX_TAGS_SIZE_TOTAL {
+            if t.as_bytes().len() + 2 > rfc::MAX_TAGS_SIZE_TOTAL {
                 return Err(ircError::InputTooLong);
             }
             Some(parse_tags(&t))
@@ -99,7 +99,7 @@ impl FromStr for Message {
             None
         };
         let rest = string_iter.collect::<String>();
-        if rest.len() > rfc::MAX_MSG_SIZE {
+        if rest.as_bytes().len() > rfc::MAX_MSG_SIZE {
             return Err(ircError::InputTooLong);
         }
         string_iter = rest.chars().peekable();
