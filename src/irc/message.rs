@@ -16,12 +16,11 @@
 */
 use crate::irc::rfc_defs as rfc;
 use crate::irc::tags::{Tags, parse_tags};
+use crate::irc::prefix::{Prefix, parse_prefix};
 use std::collections::HashMap;
 use std::iter::Peekable;
 use std::{error, fmt};
 use std::str::{Chars, FromStr};
-
-use super::rfc_defs::valid_nick;
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -60,61 +59,6 @@ impl fmt::Display for ParseError {
             ParseError::InvalidHost(host) => write!(f, "Invalid host string: {}", &host),
             ParseError::InvalidNickOrHost(name) => write!(f, "Neither valid nick nor hostname: {}", &name),
             ParseError::InvalidCommand(cmd) => write!(f, "Invalid command string: {}", &cmd),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum HostType {
-    HostName(String),
-    HostAddrV4(String),
-    HostAddrV6(String),
-}
-
-
-#[derive(Debug)]
-pub enum Prefix {
-    Name(String), // generic for when we don't know if a name is a nickname or a hostname - special case
-    Nick(String), // for when we can guess it's a nick and not a host, but have no other info
-    NickHost(String, HostType),
-    NickUserHost(String, String, HostType),
-    Host(HostType),
-}
-
-impl FromStr for Prefix {
-    type Err = ParseError;
-
-    fn from_str(s: &str) -> Result<Prefix, Self::Err> {
-        if let Some((nick, host)) = s.split_once('@') {
-            if let Some((nick, user)) = nick.split_once('!') {
-                if !rfc::valid_nick(nick) {
-                    return Err(ParseError::InvalidNick(nick.to_string()));
-                }
-                if !rfc::valid_user(user) {
-                    return Err(ParseError::InvalidUser(user.to_string()));
-                }
-                if !rfc::valid_host(host) {
-                    return Err(ParseError::InvalidHost(host.to_string()));
-                }
-                Ok(Prefix::NickUserHost(nick.to_string(), user.to_string(), HostType::HostName(host.to_string())))
-            } else {
-                if !rfc::valid_nick(nick) {
-                    return Err(ParseError::InvalidNick(nick.to_string()));
-                }
-                if !rfc::valid_host(host) {
-                    return Err(ParseError::InvalidHost(host.to_string()));
-                }
-                Ok(Prefix::NickHost(nick.to_string(), HostType::HostName(host.to_string())))
-            }
-        } else {
-            if rfc::valid_host(s) {
-                Ok(Prefix::Name(s.to_string()))
-            } else {
-                if !valid_nick(s) {
-                    return Err(ParseError::InvalidNickOrHost(s.to_string()));
-                }
-                Ok(Prefix::Nick(s.to_string()))
-            }
         }
     }
 }
@@ -201,7 +145,7 @@ impl FromStr for Message {
         }
         string_iter = rest.chars().peekable();
         let prefix = if let Some(p) = take_token_with_prefix(&mut string_iter, ':') {
-            Some(p.parse::<Prefix>()?)
+            parse_prefix(&p)
         } else {
             None
         };
@@ -307,15 +251,12 @@ mod tests {
     fn test_parse_message_valid() -> Result<(), ParseError> {
         let message_str = ":nickname cmd lol :stuff and things";
         let message = message_str.parse::<Message>()?;
-        match message.prefix {
-            Some(Prefix::Name(s)) => {
+        match message.prefix.unwrap().host {
+            Some(s) => {
                 assert!(
                     true,
                     "nick prefix with nickname `nickname` is expected, got {}", s
                 );
-            },
-            Some(p) => {
-                panic!("expected Prefix::Nick, got {:#?}", p);
             },
             None => panic!("expected Prefix::Nick, got nothing"),
         }
