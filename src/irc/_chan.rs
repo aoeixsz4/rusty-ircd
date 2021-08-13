@@ -1,8 +1,6 @@
 extern crate log;
 extern crate chrono;
-use crate::client::{ClientReply, ClientReplies, GenError};
-use crate::irc::error::Error as ircError;
-use crate::irc::reply::Reply as ircReply;
+use crate::client::GenError;
 use crate::irc::{Core, User};
 
 use chrono::Utc;
