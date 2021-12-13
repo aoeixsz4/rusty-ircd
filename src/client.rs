@@ -338,7 +338,7 @@ impl Client {
     }
 
     pub async fn send_line(&self, line: &str) -> Result<(), mpscSendErr<String>> {
-        let mut string = String::from(line);
+        let string = String::from(line);
         self.tx.clone().send(string).await
     }
 }
