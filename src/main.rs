@@ -95,7 +95,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
     env_logger::init();
 
-    let server_host = if let Ok(ip) = "127.0.1.1".parse::<IpAddr>() {
+    let server_host = if let Ok(ip) = "127.0.0.1".parse::<IpAddr>() {
         if let Host::Hostname(h) = task::spawn_blocking(move ||get_host(ip)).await?? {
             h
         } else {
@@ -111,8 +111,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     file.read_to_end(&mut identity).unwrap();
     let identity = Identity::from_pkcs12(&identity, "password").expect("failed to get identity, check password?");
 
-    let plain_listener = TcpListener::bind("127.0.1.1:6667").await?;
-    let listener = TcpListener::bind("127.0.1.1:6697").await?;
+    let plain_listener = TcpListener::bind("127.0.0.1:6667").await?;
+    let listener = TcpListener::bind("127.0.0.1:6697").await?;
     
     tokio::spawn(plain_listen(plain_listener, Arc::clone(&irc_core)));
 

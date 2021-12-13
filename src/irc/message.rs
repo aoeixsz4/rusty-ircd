@@ -104,30 +104,33 @@ impl FromStr for Message {
     type Err = err::Error;
 
     fn from_str (s: &str) -> Result<Message, Self::Err> {
-        let mut string_iter = s.chars().peekable();
-        let tags = if let Some(t) = take_token_with_prefix(&mut string_iter, '@') {
-            if t.as_bytes().len() + 2 > rfc::MAX_TAGS_SIZE_TOTAL {
-                return Err(err::Error::ParseError);
+        let mut tags = None;
+        let mut prefix = None;
+        let mut trailing_index = 0;
+        let mut command = String::new();
+        let mut trailing = String::new();
+        let mut params = s.split_whitespace().enumerate().filter_map(|(i, s)| {
+            if i == 0 && &s[1..] == "@" {
+                tags = Some(parse_tags(&s[1..])); None
+            } else if (i == 0 && &s[..1] == ":")
+                || (i == 1 && tags.is_some() && &s[..1] == ":") {
+                prefix = parse_prefix(&s[1..]); None
+            } else if command.is_empty() {
+                command = s.to_string(); None
+            } else if trailing_index == 0 && &s[..1] == ":" {
+                trailing_index = i; Some(s)
+            } else {
+                Some(s)
             }
-            Some(parse_tags(&t))
-        } else {
-            None
-        };
-        let rest = string_iter.collect::<String>();
-        if rest.as_bytes().len() > rfc::MAX_MSG_SIZE {
-            return Err(err::Error::ParseError);
+        }).collect::<Vec<&str>>();
+        if trailing_index > 0 && trailing_index < rfc::MAX_MSG_PARAMS - 1 {
+            trailing = params.split_off(trailing_index).join(" ");
+            params.push(&trailing[..1]);
+        } else if params.len() > rfc::MAX_MSG_PARAMS {
+            trailing = params.split_off(rfc::MAX_MSG_PARAMS - 1).join(" ");
+            params.push(&trailing);
         }
-        string_iter = rest.chars().peekable();
-        let prefix = if let Some(p) = take_token_with_prefix(&mut string_iter, ':') {
-            parse_prefix(&p)
-        } else {
-            None
-        };
-        let command = take_token(&mut string_iter);
-        if !rfc::valid_command(&command) {
-            return Err(err::Error::ParseError);
-        }
-        let parameters = parse_parameters(&mut string_iter);
+        let parameters = params.into_iter().map(String::from).collect();
 
         Ok(Message {
             tags,
