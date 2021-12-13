@@ -6,5 +6,7 @@
 /commit
 /fuzz/logs
 legit-self-auth.crt
+cert.pem
+key.pem
 identity.pfx
 rusty-aoei.key
