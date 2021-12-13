@@ -59,18 +59,14 @@ fn take_token (iter: &mut Peekable<Chars<'_>>) -> String {
     token
 }
 
-fn take_token_with_prefix (
-    iter: &mut Peekable<Chars<'_>>,
-    prefix_char: char
-) -> Option<String> {
-    match iter.peek() {
-        Some(c) if *c != prefix_char => None,
-        Some(_) => {
-            iter.next()?;
-            Some(take_token(iter))
-        },
-        None => None,
+fn take_token_with_prefix<'a> (s: &'a str, prefix: &str) -> (&'a str, &'a str) {
+    let (p_len, s_len) = (prefix.len(), s.len());
+    if p_len < s_len && &s[..p_len] == prefix {
+        if let Some(i) = s.find(" ") {
+            return (&s[p_len..i], &s[i+1..]);
+        }
     }
+    ("", s)
 }
 
 fn assemble_parameters (params: &Vec<String>) -> String {
@@ -104,12 +100,12 @@ impl FromStr for Message {
     type Err = err::Error;
 
     fn from_str (s: &str) -> Result<Message, Self::Err> {
-        let mut string_iter = s.chars().peekable();
-        let tags = if let Some(t) = take_token_with_prefix(&mut string_iter, '@') {
-            if t.as_bytes().len() + 2 > rfc::MAX_TAGS_SIZE_TOTAL {
+        let (tag_string, s) = take_token_with_prefix(s, "@");
+        let tags = if tag_string.is_empty() {
+            if tag_string.as_bytes().len() + 2 > rfc::MAX_TAGS_SIZE_TOTAL {
                 return Err(err::Error::ParseError);
             }
-            Some(parse_tags(&t))
+            Some(parse_tags(&tag_string))
         } else {
             None
         };
