@@ -14,16 +14,15 @@
 *  You should have received a copy of the GNU Lesser General Public License
 *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
-extern crate dns_lookup;
-extern crate log;
-extern crate tokio;
-extern crate tokio_native_tls;
+//pub mod client;
+//pub mod io;
 pub mod irc;
-pub mod client;
-pub mod io;
-use crate::client::{run_client_handler, run_write_task, Host, GenError};
+
+fn main() {}
+/*
+//use crate::client::{run_client_handler, run_write_task, GenError, Host};
 use crate::io::{ReadHalfWrap, WriteHalfWrap};
-use crate::irc::Core;
+//use crate::irc::Core;
 use dns_lookup::lookup_addr;
 use std::fs::File;
 use std::io::Error as ioError;
@@ -34,9 +33,9 @@ use tokio::io::split;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task;
-use tokio_native_tls::TlsAcceptor;
 use tokio_native_tls::native_tls::Identity;
 use tokio_native_tls::native_tls::TlsAcceptor as NativeTlsAcc;
+use tokio_native_tls::TlsAcceptor;
 
 pub const USER_MODES: &str = "";
 pub const CHAN_MODES: &str = "+o";
@@ -72,7 +71,11 @@ async fn plain_listen(server: TcpListener, irc_core: Arc<Core>) -> Result<(), Ge
     }
 }
 
-async fn process_socket(sock: TcpStream, irc: Arc<Core>, acceptor: Arc<TlsAcceptor>) -> Result<(), GenError> {
+async fn process_socket(
+    sock: TcpStream,
+    irc: Arc<Core>,
+    acceptor: Arc<TlsAcceptor>,
+) -> Result<(), GenError> {
     let id = irc.assign_id();
     let ip_address = sock.peer_addr()?.ip();
     let host = task::spawn_blocking(move || get_host(ip_address)).await??;
@@ -96,7 +99,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let server_host = if let Ok(ip) = "127.0.1.1".parse::<IpAddr>() {
-        if let Host::Hostname(h) = task::spawn_blocking(move ||get_host(ip)).await?? {
+        if let Host::Hostname(h) = task::spawn_blocking(move || get_host(ip)).await?? {
             h
         } else {
             "localhost".to_string()
@@ -109,11 +112,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file = File::open("identity.pfx").unwrap();
     let mut identity = vec![];
     file.read_to_end(&mut identity).unwrap();
-    let identity = Identity::from_pkcs12(&identity, "password").expect("failed to get identity, check password?");
+    let identity = Identity::from_pkcs12(&identity, "password")
+        .expect("failed to get identity, check password?");
 
     let plain_listener = TcpListener::bind("127.0.1.1:6667").await?;
     let listener = TcpListener::bind("127.0.1.1:6697").await?;
-    
+
     tokio::spawn(plain_listen(plain_listener, Arc::clone(&irc_core)));
 
     let acceptor = NativeTlsAcc::new(identity).unwrap();
@@ -121,6 +125,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let acceptor = Arc::new(TlsAcceptor::from(acceptor));
     loop {
         let (socket, _) = listener.accept().await?;
-        tokio::spawn(process_socket(socket, Arc::clone(&irc_core), Arc::clone(&acceptor)));
+        tokio::spawn(process_socket(
+            socket,
+            Arc::clone(&irc_core),
+            Arc::clone(&acceptor),
+        ));
     }
 }
+*/
