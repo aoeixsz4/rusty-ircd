@@ -5,7 +5,7 @@ However, the intention is not to fall prey to the notion that nobody will ever r
 Therefore, efforts will be made to prioritise readable, maintainable code that is extensible and supports e.g. i18n.
 Indeed these will be valuable tools for the author to learn about, too.
 
-This software is licensed under the Mozilla Public License v2.0.
+This software is licensed under the MIT License.
 
 ## Branches
 ### irc-proto-port (not yet begun)
