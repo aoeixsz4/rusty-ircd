@@ -1,7 +1,7 @@
 [package]
 name = "rusty-ircd"
 version = "0.3.0"
-authors = ["Joanna Janet Zaitseva-Doyle <jjadoyle@gmail.com>"]
+authors = ["Joanna Irina Zaitseva-Doyle <jjadoyle@gmail.com>"]
 edition = "2018"
 license = "MIT"
 
